@@ -9,6 +9,7 @@ Optimization improvements:
 """
 
 import json
+import os
 import random
 import time
 from typing import Dict, Any, List, Optional
@@ -24,11 +25,20 @@ from ..storage import GraphStorage
 
 logger = get_logger('mirofish.oasis_profile')
 
-DEFAULT_PROFILE_DETAIL_LEVEL = getattr(Config, 'OASIS_PROFILE_DETAIL_LEVEL', 'balanced')
-DEFAULT_PERSONA_WORD_TARGET = getattr(Config, 'OASIS_PERSONA_WORD_TARGET', 600)
-DEFAULT_ENABLE_GRAPH_SEARCH = getattr(Config, 'OASIS_PROFILE_ENABLE_GRAPH_SEARCH', False)
-DEFAULT_REALTIME_SAVE_EVERY_N = getattr(Config, 'OASIS_REALTIME_SAVE_EVERY_N', 10)
-DEFAULT_REALTIME_SAVE_INTERVAL_SECONDS = getattr(Config, 'OASIS_REALTIME_SAVE_INTERVAL_SECONDS', 2)
+DEFAULT_PROFILE_DETAIL_LEVEL = os.environ.get('OASIS_PROFILE_DETAIL_LEVEL', 'balanced').strip().lower()
+try:
+    DEFAULT_PERSONA_WORD_TARGET = max(150, int(os.environ.get('OASIS_PERSONA_WORD_TARGET', '600').strip()))
+except (ValueError, AttributeError):
+    DEFAULT_PERSONA_WORD_TARGET = 600
+DEFAULT_ENABLE_GRAPH_SEARCH = os.environ.get('OASIS_PROFILE_ENABLE_GRAPH_SEARCH', 'false').strip().lower() == 'true'
+try:
+    DEFAULT_REALTIME_SAVE_EVERY_N = max(1, int(os.environ.get('OASIS_REALTIME_SAVE_EVERY_N', '10').strip()))
+except (ValueError, AttributeError):
+    DEFAULT_REALTIME_SAVE_EVERY_N = 10
+try:
+    DEFAULT_REALTIME_SAVE_INTERVAL_SECONDS = max(1, int(os.environ.get('OASIS_REALTIME_SAVE_INTERVAL_SECONDS', '2').strip()))
+except (ValueError, AttributeError):
+    DEFAULT_REALTIME_SAVE_INTERVAL_SECONDS = 2
 
 
 @dataclass

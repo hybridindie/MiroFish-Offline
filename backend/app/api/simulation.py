@@ -395,13 +395,18 @@ def prepare_simulation():
     import threading
     import os
     from ..models.task import TaskManager, TaskStatus
-    from ..config import Config
 
-    default_enable_graph_search = getattr(Config, 'OASIS_PROFILE_ENABLE_GRAPH_SEARCH', False)
-    default_profile_detail_level = getattr(Config, 'OASIS_PROFILE_DETAIL_LEVEL', 'balanced')
-    default_realtime_save_every_n = getattr(Config, 'OASIS_REALTIME_SAVE_EVERY_N', 10)
-    default_realtime_save_interval_seconds = getattr(Config, 'OASIS_REALTIME_SAVE_INTERVAL_SECONDS', 2)
-    default_config_mode = getattr(Config, 'SIM_CONFIG_MODE', 'balanced')
+    default_enable_graph_search = os.environ.get('OASIS_PROFILE_ENABLE_GRAPH_SEARCH', 'false').strip().lower() == 'true'
+    default_profile_detail_level = os.environ.get('OASIS_PROFILE_DETAIL_LEVEL', 'balanced').strip().lower()
+    try:
+        default_realtime_save_every_n = max(1, int(os.environ.get('OASIS_REALTIME_SAVE_EVERY_N', '10').strip()))
+    except (ValueError, AttributeError):
+        default_realtime_save_every_n = 10
+    try:
+        default_realtime_save_interval_seconds = max(1, int(os.environ.get('OASIS_REALTIME_SAVE_INTERVAL_SECONDS', '2').strip()))
+    except (ValueError, AttributeError):
+        default_realtime_save_interval_seconds = 2
+    default_config_mode = os.environ.get('SIM_CONFIG_MODE', 'balanced').strip().lower()
     
     try:
         data = request.get_json() or {}

@@ -12,6 +12,7 @@ Adopt step-by-step generation strategy to avoid failures from generating too lon
 
 import json
 import math
+import os
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -24,8 +25,11 @@ from .entity_reader import EntityNode
 
 logger = get_logger('mirofish.simulation_config')
 
-DEFAULT_SIM_CONFIG_MODE = getattr(Config, 'SIM_CONFIG_MODE', 'balanced')
-DEFAULT_AGENTS_PER_BATCH = getattr(Config, 'SIM_CONFIG_AGENTS_PER_BATCH', 20)
+DEFAULT_SIM_CONFIG_MODE = os.environ.get('SIM_CONFIG_MODE', 'balanced').strip().lower()
+try:
+    DEFAULT_AGENTS_PER_BATCH = min(60, max(5, int(os.environ.get('SIM_CONFIG_AGENTS_PER_BATCH', '20').strip())))
+except (ValueError, AttributeError):
+    DEFAULT_AGENTS_PER_BATCH = 20
 
 # Time zone configuration for Chinese work schedules (Beijing Time)
 CHINA_TIMEZONE_CONFIG = {

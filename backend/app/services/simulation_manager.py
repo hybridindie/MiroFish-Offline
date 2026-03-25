@@ -20,11 +20,17 @@ from .simulation_config_generator import SimulationConfigGenerator, SimulationPa
 
 logger = get_logger('mirofish.simulation')
 
-DEFAULT_PROFILE_ENABLE_GRAPH_SEARCH = getattr(Config, 'OASIS_PROFILE_ENABLE_GRAPH_SEARCH', False)
-DEFAULT_PROFILE_DETAIL_LEVEL = getattr(Config, 'OASIS_PROFILE_DETAIL_LEVEL', 'balanced')
-DEFAULT_REALTIME_SAVE_EVERY_N = getattr(Config, 'OASIS_REALTIME_SAVE_EVERY_N', 10)
-DEFAULT_REALTIME_SAVE_INTERVAL_SECONDS = getattr(Config, 'OASIS_REALTIME_SAVE_INTERVAL_SECONDS', 2)
-DEFAULT_SIM_CONFIG_MODE = getattr(Config, 'SIM_CONFIG_MODE', 'balanced')
+DEFAULT_PROFILE_ENABLE_GRAPH_SEARCH = os.environ.get('OASIS_PROFILE_ENABLE_GRAPH_SEARCH', 'false').strip().lower() == 'true'
+DEFAULT_PROFILE_DETAIL_LEVEL = os.environ.get('OASIS_PROFILE_DETAIL_LEVEL', 'balanced').strip().lower()
+try:
+    DEFAULT_REALTIME_SAVE_EVERY_N = max(1, int(os.environ.get('OASIS_REALTIME_SAVE_EVERY_N', '10').strip()))
+except (ValueError, AttributeError):
+    DEFAULT_REALTIME_SAVE_EVERY_N = 10
+try:
+    DEFAULT_REALTIME_SAVE_INTERVAL_SECONDS = max(1, int(os.environ.get('OASIS_REALTIME_SAVE_INTERVAL_SECONDS', '2').strip()))
+except (ValueError, AttributeError):
+    DEFAULT_REALTIME_SAVE_INTERVAL_SECONDS = 2
+DEFAULT_SIM_CONFIG_MODE = os.environ.get('SIM_CONFIG_MODE', 'balanced').strip().lower()
 
 
 class SimulationStatus(str, Enum):
