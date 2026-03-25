@@ -36,8 +36,9 @@ class EmbeddingService:
         self._previous_model = self.model
 
         # In-memory cache keyed by (model, text) to avoid stale embeddings
-        # when model changes. Using dict instead of lru_cache because tuples
-        # with lists aren't hashable.
+        # when model changes. We use a manual dict-based cache (instead
+        # of functools.lru_cache) so we can flush on model changes and store
+        # list embedding vectors as values.
         self._cache: dict[tuple[str, str], List[float]] = {}
         self._cache_max_size = 2000
         self._cache_lock = threading.Lock()  # guards all _cache reads/writes
@@ -46,14 +47,16 @@ class EmbeddingService:
 
     def _check_model_change(self) -> None:
         """Detect and log model changes, flushing cache if needed."""
-        if self.model != self._previous_model:
-            logger.warning(
-                f"Embedding model changed from '{self._previous_model}' to '{self.model}'. "
-                f"Flushing {len(self._cache)} cached embeddings."
-            )
-            with self._cache_lock:
+        # Check and update model under lock to avoid race conditions
+        with self._cache_lock:
+            if self.model != self._previous_model:
+                cache_size = len(self._cache)
                 self._cache.clear()
-            self._previous_model = self.model
+                logger.warning(
+                    f"Embedding model changed from '{self._previous_model}' to '{self.model}'. "
+                    f"Flushing {cache_size} cached embeddings."
+                )
+                self._previous_model = self.model
 
     def embed(self, text: str) -> List[float]:
         """

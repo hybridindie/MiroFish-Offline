@@ -640,7 +640,7 @@ class Neo4jStorage(GraphStorage):
         def _read(tx):
             result = tx.run(
                 """
-                MATCH (n:Entity {uuid: $uuid})-[r:RELATION]-(m:Entity)
+                MATCH (n:Entity)-[r:RELATION]-(m:Entity)
                 WHERE n.uuid IN $uuids
                 RETURN n.uuid AS node_uuid, r, startNode(r).uuid AS src_uuid, endNode(r).uuid AS tgt_uuid
                 """,
