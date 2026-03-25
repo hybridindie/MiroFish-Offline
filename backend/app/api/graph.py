@@ -348,7 +348,7 @@ def build_graph():
 
         max_workers = data.get('max_workers', Config.GRAPH_BUILD_WORKERS)
         try:
-            max_workers = max(1, int(max_workers))
+            max_workers = max(1, min(int(max_workers), Config.GRAPH_BUILD_WORKERS_MAX))
         except (TypeError, ValueError):
             max_workers = Config.GRAPH_BUILD_WORKERS
 

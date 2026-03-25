@@ -218,8 +218,8 @@ class GraphBuilderService:
 
         # Results indexed by original chunk position so ordering is preserved.
         results: Dict[int, str] = {}
-        completed_count = threading.Lock()
-        _done = [0]  # mutable counter shared across threads
+        _done_lock = threading.Lock()
+        _done_count = [0]  # chunks completed so far (for progress reporting)
         first_error: list = []  # [exception] — populated by first failing thread
 
         def _process_chunk(chunk_idx: int, chunk: str) -> tuple:
@@ -259,6 +259,15 @@ class GraphBuilderService:
                     try:
                         chunk_idx, episode_id = future.result()
                         results[chunk_idx] = episode_id
+                        with _done_lock:
+                            _done_count[0] += 1
+                            done_so_far = _done_count[0]
+                        if progress_callback:
+                            progress_callback(
+                                f"Chunk {done_so_far}/{total_chunks} complete "
+                                f"(batch {batch_num}/{total_batches})",
+                                done_so_far / total_chunks
+                            )
                     except Exception as e:
                         chunk_idx = futures[future]
                         logger.error(
@@ -267,6 +276,10 @@ class GraphBuilderService:
                         )
                         if not first_error:
                             first_error.append(e)
+                            # Cancel not-yet-started futures and stop waiting.
+                            for f in futures:
+                                f.cancel()
+                            break
 
             if first_error:
                 if progress_callback:

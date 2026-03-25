@@ -7,6 +7,7 @@ Uses Ollama's /api/embed endpoint for vector generation (768 dimensions).
 
 import time
 import logging
+import threading
 from typing import List, Optional
 from functools import lru_cache
 
@@ -37,6 +38,7 @@ class EmbeddingService:
         # Using dict instead of lru_cache because lists aren't hashable
         self._cache: dict[str, List[float]] = {}
         self._cache_max_size = 2000
+        self._cache_lock = threading.Lock()  # guards all _cache reads/writes
 
     def embed(self, text: str) -> List[float]:
         """
@@ -57,8 +59,9 @@ class EmbeddingService:
         text = text.strip()
 
         # Check cache
-        if text in self._cache:
-            return self._cache[text]
+        with self._cache_lock:
+            if text in self._cache:
+                return self._cache[text]
 
         vectors = self._request_embeddings([text])
         vector = vectors[0]
@@ -91,8 +94,10 @@ class EmbeddingService:
         # Check cache first
         for i, text in enumerate(texts):
             text = text.strip() if text else ""
-            if text in self._cache:
-                results[i] = self._cache[text]
+            with self._cache_lock:
+                cached = self._cache.get(text)
+            if cached is not None:
+                results[i] = cached
             elif text:
                 uncached_indices.append(i)
                 uncached_texts.append(text)
@@ -183,12 +188,13 @@ class EmbeddingService:
 
     def _cache_put(self, text: str, vector: List[float]) -> None:
         """Add to cache, evicting oldest entries if full."""
-        if len(self._cache) >= self._cache_max_size:
-            # Remove ~10% of oldest entries
-            keys_to_remove = list(self._cache.keys())[:self._cache_max_size // 10]
-            for key in keys_to_remove:
-                del self._cache[key]
-        self._cache[text] = vector
+        with self._cache_lock:
+            if len(self._cache) >= self._cache_max_size:
+                # Remove ~10% of oldest entries
+                keys_to_remove = list(self._cache.keys())[:self._cache_max_size // 10]
+                for key in keys_to_remove:
+                    del self._cache[key]
+            self._cache[text] = vector
 
     def health_check(self) -> bool:
         """Check if Ollama embedding endpoint is reachable."""
