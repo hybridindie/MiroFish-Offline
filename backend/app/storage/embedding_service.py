@@ -33,12 +33,27 @@ class EmbeddingService:
         self.max_retries = max_retries
         self.timeout = timeout
         self._embed_url = f"{self.base_url}/api/embed"
+        self._previous_model = self.model
 
-        # Simple in-memory cache (text -> embedding vector)
-        # Using dict instead of lru_cache because lists aren't hashable
-        self._cache: dict[str, List[float]] = {}
+        # In-memory cache keyed by (model, text) to avoid stale embeddings
+        # when model changes. Using dict instead of lru_cache because tuples
+        # with lists aren't hashable.
+        self._cache: dict[tuple[str, str], List[float]] = {}
         self._cache_max_size = 2000
         self._cache_lock = threading.Lock()  # guards all _cache reads/writes
+
+        logger.info(f"EmbeddingService initialized with model '{self.model}'")
+
+    def _check_model_change(self) -> None:
+        """Detect and log model changes, flushing cache if needed."""
+        if self.model != self._previous_model:
+            logger.warning(
+                f"Embedding model changed from '{self._previous_model}' to '{self.model}'. "
+                f"Flushing {len(self._cache)} cached embeddings."
+            )
+            with self._cache_lock:
+                self._cache.clear()
+            self._previous_model = self.model
 
     def embed(self, text: str) -> List[float]:
         """
@@ -57,11 +72,13 @@ class EmbeddingService:
             raise EmbeddingError("Cannot embed empty text")
 
         text = text.strip()
+        self._check_model_change()
 
-        # Check cache
+        # Check cache using (model, text) key
+        cache_key = (self.model, text)
         with self._cache_lock:
-            if text in self._cache:
-                return self._cache[text]
+            if cache_key in self._cache:
+                return self._cache[cache_key]
 
         vectors = self._request_embeddings([text])
         vector = vectors[0]
@@ -87,15 +104,18 @@ class EmbeddingService:
         if not texts:
             return []
 
+        self._check_model_change()
+
         results: List[Optional[List[float]]] = [None] * len(texts)
         uncached_indices: List[int] = []
         uncached_texts: List[str] = []
 
-        # Check cache first
+        # Check cache first using (model, text) key
         for i, text in enumerate(texts):
             text = text.strip() if text else ""
+            cache_key = (self.model, text)
             with self._cache_lock:
-                cached = self._cache.get(text)
+                cached = self._cache.get(cache_key)
             if cached is not None:
                 results[i] = cached
             elif text:
@@ -187,14 +207,15 @@ class EmbeddingService:
         )
 
     def _cache_put(self, text: str, vector: List[float]) -> None:
-        """Add to cache, evicting oldest entries if full."""
+        """Add to cache using (model, text) key, evicting oldest entries if full."""
+        cache_key = (self.model, text)
         with self._cache_lock:
             if len(self._cache) >= self._cache_max_size:
                 # Remove ~10% of oldest entries
                 keys_to_remove = list(self._cache.keys())[:self._cache_max_size // 10]
                 for key in keys_to_remove:
                     del self._cache[key]
-            self._cache[text] = vector
+            self._cache[cache_key] = vector
 
     def health_check(self) -> bool:
         """Check if Ollama embedding endpoint is reachable."""
