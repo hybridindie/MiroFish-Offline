@@ -1,0 +1,6 @@
+market,age_band,audience_share_pct,gender_split_f_pct,gender_split_m_pct,language_primary,device_mobile_pct,peak_hours_local,virtual_creator_acceptance_1_5
+US,18-24,34,52,48,English,91,"19-23",4.0
+US,25-34,28,51,49,English,87,"19-23",3.2
+US,35-44,22,50,50,English,80,"19-23",2.5
+UK,18-24,35,53,47,English,90,"19-23",3.8
+UK,25-34,27,51,49,English,86,"19-23",3.0

@@ -67,6 +67,14 @@ class GraphStorage(ABC):
         Kept for API compatibility with Zep-era callers.
         """
 
+    @abstractmethod
+    def add_researched_relations(
+        self,
+        graph_id: str,
+        relations: List[Dict[str, Any]],
+    ) -> int:
+        """Persist researched relations and return number of created/merged edges."""
+
     # --- Read nodes ---
 
     @abstractmethod

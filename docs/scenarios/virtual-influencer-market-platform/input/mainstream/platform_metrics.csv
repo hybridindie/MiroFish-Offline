@@ -1,0 +1,6 @@
+market,platform,monthly_active_users_m,avg_reach_rate_pct,engagement_rate_pct,short_video_weight_1_5,algorithm_volatility_1_5,creator_discoverability_1_5,brand_safety_score_1_5
+US,Instagram Reels,140,5.2,2.8,5,3.5,3.5,4.5
+US,TikTok,170,10.5,5.1,5,4.5,4.5,3.5
+US,YouTube Shorts,150,6.8,3.2,5,3.0,3.0,4.5
+UK,Instagram Reels,28,4.9,2.6,5,3.5,3.5,4.5
+UK,TikTok,17,10.2,4.9,5,4.5,4.5,3.5
