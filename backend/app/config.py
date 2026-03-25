@@ -55,6 +55,14 @@ class Config:
     except (ValueError, AttributeError):
         DEFAULT_GRAPH_BATCH_SIZE = 3
 
+    # Number of parallel threads for chunk ingestion (NER+embed are I/O-bound).
+    # Keep at 1 to disable parallelism; increase cautiously relative to Ollama capacity.
+    _graph_build_workers_str = os.environ.get('GRAPH_BUILD_WORKERS', '2')
+    try:
+        GRAPH_BUILD_WORKERS = max(1, int(_graph_build_workers_str.strip()))
+    except (ValueError, AttributeError):
+        GRAPH_BUILD_WORKERS = 2
+
     # OASIS simulation configuration
     OASIS_DEFAULT_MAX_ROUNDS = int(os.environ.get('OASIS_DEFAULT_MAX_ROUNDS', '10'))
     OASIS_SIMULATION_DATA_DIR = os.path.join(os.path.dirname(__file__), '../uploads/simulations')
