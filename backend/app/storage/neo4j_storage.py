@@ -47,13 +47,18 @@ class Neo4jStorage(GraphStorage):
         self._uri = uri or Config.NEO4J_URI
         self._user = user or Config.NEO4J_USER
         self._password = password or Config.NEO4J_PASSWORD
+        self._pool_size = Config.NEO4J_POOL_SIZE
 
         self._driver = GraphDatabase.driver(
-            self._uri, auth=(self._user, self._password)
+            self._uri, 
+            auth=(self._user, self._password),
+            max_connection_pool_size=self._pool_size,
         )
         self._embedding = embedding_service or EmbeddingService()
         self._ner = ner_extractor or NERExtractor()
         self._search = SearchService(self._embedding)
+
+        logger.info(f"Neo4j connection pool configured: max_connection_pool_size={self._pool_size}")
 
         # Initialize schema (indexes, constraints)
         self._ensure_schema()
@@ -613,6 +618,41 @@ class Neo4jStorage(GraphStorage):
                 self._edge_to_dict(record["r"], record["src_uuid"], record["tgt_uuid"])
                 for record in result
             ]
+
+        with self._driver.session() as session:
+            return self._call_with_retry(session.execute_read, _read)
+
+    def get_nodes_edges_batch(self, node_uuids: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Get edges for multiple nodes in a single Neo4j round-trip.
+        
+        Addresses O(N) query pattern by batching N queries into one.
+        
+        Args:
+            node_uuids: List of node UUIDs to fetch edges for
+            
+        Returns:
+            Dict mapping each node UUID to its list of edges
+        """
+        if not node_uuids:
+            return {}
+
+        def _read(tx):
+            result = tx.run(
+                """
+                MATCH (n:Entity)-[r:RELATION]-(m:Entity)
+                WHERE n.uuid IN $uuids
+                RETURN n.uuid AS node_uuid, r, startNode(r).uuid AS src_uuid, endNode(r).uuid AS tgt_uuid
+                """,
+                uuids=node_uuids,
+            )
+            edges_by_node: Dict[str, List[Dict[str, Any]]] = {uuid: [] for uuid in node_uuids}
+            for record in result:
+                node_uuid = record["node_uuid"]
+                edge = self._edge_to_dict(record["r"], record["src_uuid"], record["tgt_uuid"])
+                if node_uuid in edges_by_node:
+                    edges_by_node[node_uuid].append(edge)
+            return edges_by_node
 
         with self._driver.session() as session:
             return self._call_with_retry(session.execute_read, _read)

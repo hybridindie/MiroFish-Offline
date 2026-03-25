@@ -75,6 +75,15 @@ class Config:
     except (ValueError, AttributeError):
         GRAPH_BUILD_WORKERS_MAX = 8
 
+    # Neo4j connection pool configuration
+    # Sized as GRAPH_BUILD_WORKERS * 2 + headroom. Overridable via NEO4J_POOL_SIZE.
+    _default_neo4j_pool_size = GRAPH_BUILD_WORKERS * 2 + 10
+    _neo4j_pool_size_str = os.environ.get('NEO4J_POOL_SIZE', str(_default_neo4j_pool_size))
+    try:
+        NEO4J_POOL_SIZE = max(10, int(_neo4j_pool_size_str.strip()))
+    except (ValueError, AttributeError):
+        NEO4J_POOL_SIZE = _default_neo4j_pool_size
+
     # Maximum tokens the NER/RE LLM call may produce per chunk.  A lower value
     # reduces latency and reduces context use when chunks are small.  The
     # extractor will scale this down proportionally for short chunks.
