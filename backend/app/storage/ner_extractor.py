@@ -54,9 +54,11 @@ class NERExtractor:
     def _token_budget(self, text: str) -> int:
         """Return a token budget proportional to the input text length.
 
-        Rough rule: ~1 output token per 2 input characters, clamped between
-        256 and Config.NER_MAX_TOKENS.  Avoids reserving 4096 tokens when
-        the chunk is only a few hundred characters.
+        Formula: ``max(256, len(text) // 2)``, then capped at
+        ``Config.NER_MAX_TOKENS``.  For text shorter than 512 characters the
+        floor of 256 always applies regardless of NER_MAX_TOKENS; setting
+        NER_MAX_TOKENS does not restore the old fixed-4096 behaviour for short
+        chunks — it only raises the ceiling for longer ones.
         """
         proportional = max(256, len(text) // 2)
         return min(proportional, Config.NER_MAX_TOKENS)

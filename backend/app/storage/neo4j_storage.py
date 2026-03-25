@@ -449,20 +449,24 @@ class Neo4jStorage(GraphStorage):
         # Write embeddings back in one UNWIND transaction
         rows = [{"uuid": u, "embedding": emb} for u, emb in zip(uuids, embeddings)]
         def _write_embeddings(tx):
-            tx.run(
+            result = tx.run(
                 """
                 UNWIND $rows AS row
-                MATCH ()-[r:RELATION {uuid: row.uuid}]->()
+                MATCH ()-[r:RELATION {graph_id: $gid, uuid: row.uuid}]->()
                 SET r.fact_embedding = row.embedding
+                RETURN count(r) AS updated
                 """,
                 rows=rows,
+                gid=graph_id,
             )
+            record = result.single()
+            return record["updated"] if record else 0
 
         with self._driver.session() as session:
-            self._call_with_retry(session.execute_write, _write_embeddings)
+            updated_count = self._call_with_retry(session.execute_write, _write_embeddings)
 
-        logger.info("[embed_pending_relations] Updated %d relations", len(rows))
-        return len(rows)
+        logger.info("[embed_pending_relations] Updated %d relations", updated_count)
+        return updated_count
 
     def wait_for_processing(
         self,
