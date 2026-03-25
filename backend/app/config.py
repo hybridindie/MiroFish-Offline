@@ -49,7 +49,11 @@ class Config:
     # Text processing configuration
     DEFAULT_CHUNK_SIZE = 500  # Default chunk size
     DEFAULT_CHUNK_OVERLAP = 50  # Default overlap size
-    DEFAULT_GRAPH_BATCH_SIZE = int(os.environ.get('DEFAULT_GRAPH_BATCH_SIZE', '3'))
+    _default_graph_batch_size_str = os.environ.get('DEFAULT_GRAPH_BATCH_SIZE', '3')
+    try:
+        DEFAULT_GRAPH_BATCH_SIZE = int(_default_graph_batch_size_str.strip())
+    except (ValueError, AttributeError):
+        DEFAULT_GRAPH_BATCH_SIZE = 3
 
     # OASIS simulation configuration
     OASIS_DEFAULT_MAX_ROUNDS = int(os.environ.get('OASIS_DEFAULT_MAX_ROUNDS', '10'))

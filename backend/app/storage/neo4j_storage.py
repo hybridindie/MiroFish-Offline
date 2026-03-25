@@ -6,6 +6,7 @@ Includes: CRUD, NER/RE-based text ingestion, hybrid search, retry logic.
 """
 
 import json
+import re
 import time
 import uuid
 import logging
@@ -291,12 +292,15 @@ class Neo4jStorage(GraphStorage):
             # Add entity type labels in grouped UNWIND writes (one query per label type)
             for etype, name_lowers in labels_by_type.items():
                 try:
-                    def _add_label_group(tx, _name_lowers=name_lowers, _etype=etype):
+                    # Sanitize the label coming from LLM output: escape backticks by
+                    # doubling them (Neo4j convention) so they cannot break the query.
+                    safe_etype = re.sub(r'[^\w ]', '', etype).strip().replace(' ', '_') or 'Unknown'
+                    def _add_label_group(tx, _name_lowers=name_lowers, _safe_etype=safe_etype):
                         tx.run(
                             f"""
                             UNWIND $name_lowers AS nl
                             MATCH (n:Entity {{graph_id: $gid, name_lower: nl}})
-                            SET n:`{_etype}`
+                            SET n:`{_safe_etype}`
                             """,
                             gid=graph_id,
                             name_lowers=_name_lowers,
@@ -304,7 +308,7 @@ class Neo4jStorage(GraphStorage):
 
                     self._call_with_retry(session.execute_write, _add_label_group)
                 except Exception as e:
-                    logger.warning("Failed to add label '%s' to %d entities: %s", etype, len(name_lowers), e)
+                    logger.warning("Failed to add label '%s' to %d entities: %s", safe_etype, len(name_lowers), e)
 
             # Create relations in one UNWIND write
             relation_rows: List[Dict[str, Any]] = []

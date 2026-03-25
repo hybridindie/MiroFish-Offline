@@ -31,7 +31,12 @@ class LLMClient:
         self.base_url = (base_url or Config.LLM_BASE_URL or '').strip()
         self.model = (model or Config.LLM_MODEL_NAME or '').strip()
         # Keep LLM calls bounded so API routes fail fast and can apply fallback logic.
-        self.timeout = float(timeout if timeout is not None else os.environ.get('LLM_TIMEOUT_SECONDS', '120'))
+        raw_timeout = timeout if timeout is not None else os.environ.get('LLM_TIMEOUT_SECONDS', '120')
+        try:
+            self.timeout = float(raw_timeout)
+        except (TypeError, ValueError):
+            logger.warning("Invalid LLM_TIMEOUT_SECONDS value %r, defaulting to 120 s", raw_timeout)
+            self.timeout = 120.0
 
         if not self.api_key:
             raise ValueError("LLM_API_KEY not configured")
@@ -123,6 +128,7 @@ class LLMClient:
         # Do not perform another long model call here. Upstream callers may apply
         # deterministic fallback behavior when JSON output is invalid.
         cleaned_preview = self._clean_text_response(response)
+        logger.warning("LLM returned non-JSON output (first 200 chars): %s", cleaned_preview[:200])
         raise ValueError(f"Invalid JSON format from LLM: {cleaned_preview[:500]}")
 
     def _clean_text_response(self, response: Optional[str]) -> str:
