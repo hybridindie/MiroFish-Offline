@@ -11,6 +11,10 @@ from typing import Optional, Dict, Any, List
 from openai import OpenAI
 
 from ..config import Config
+from ..utils.logger import get_logger
+
+
+logger = get_logger('mirofish.llm_client')
 
 
 class LLMClient:
@@ -21,11 +25,13 @@ class LLMClient:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
-        timeout: float = 300.0
+        timeout: Optional[float] = None
     ):
-        self.api_key = api_key or Config.LLM_API_KEY
-        self.base_url = base_url or Config.LLM_BASE_URL
-        self.model = model or Config.LLM_MODEL_NAME
+        self.api_key = (api_key or Config.LLM_API_KEY or '').strip()
+        self.base_url = (base_url or Config.LLM_BASE_URL or '').strip()
+        self.model = (model or Config.LLM_MODEL_NAME or '').strip()
+        # Keep LLM calls bounded so API routes fail fast and can apply fallback logic.
+        self.timeout = float(timeout if timeout is not None else os.environ.get('LLM_TIMEOUT_SECONDS', '120'))
 
         if not self.api_key:
             raise ValueError("LLM_API_KEY not configured")
@@ -33,7 +39,7 @@ class LLMClient:
         self.client = OpenAI(
             api_key=self.api_key,
             base_url=self.base_url,
-            timeout=timeout,
+            timeout=self.timeout,
         )
 
         # Ollama context window size — prevents prompt truncation.
@@ -108,13 +114,77 @@ class LLMClient:
             max_tokens=max_tokens,
             response_format={"type": "json_object"}
         )
-        # Clean markdown code block markers
-        cleaned_response = response.strip()
-        cleaned_response = re.sub(r'^```(?:json)?\s*\n?', '', cleaned_response, flags=re.IGNORECASE)
-        cleaned_response = re.sub(r'\n?```\s*$', '', cleaned_response)
-        cleaned_response = cleaned_response.strip()
+
+        # Parse once (strict JSON mode path).
+        parsed = self._parse_json_response(response)
+        if parsed is not None:
+            return parsed
+
+        # Do not perform another long model call here. Upstream callers may apply
+        # deterministic fallback behavior when JSON output is invalid.
+        cleaned_preview = self._clean_text_response(response)
+        raise ValueError(f"Invalid JSON format from LLM: {cleaned_preview[:500]}")
+
+    def _clean_text_response(self, response: Optional[str]) -> str:
+        """Normalize response text before JSON parsing."""
+        text = (response or '').strip()
+        text = re.sub(r'^```(?:json)?\s*\n?', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\n?```\s*$', '', text)
+        return text.strip()
+
+    def _extract_json_object(self, text: str) -> Optional[str]:
+        """Extract first balanced JSON object from noisy model text."""
+        start = text.find('{')
+        if start == -1:
+            return None
+
+        depth = 0
+        in_string = False
+        escape = False
+
+        for i in range(start, len(text)):
+            ch = text[i]
+
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == '\\':
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+
+            if ch == '"':
+                in_string = True
+            elif ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+
+        return None
+
+    def _parse_json_response(self, response: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Try strict and extracted-object JSON parsing; return None on failure."""
+        cleaned = self._clean_text_response(response)
+        if not cleaned:
+            return None
 
         try:
-            return json.loads(cleaned_response)
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                return parsed
+            return None
         except json.JSONDecodeError:
-            raise ValueError(f"Invalid JSON format from LLM: {cleaned_response}")
+            pass
+
+        extracted = self._extract_json_object(cleaned)
+        if not extracted:
+            return None
+
+        try:
+            parsed = json.loads(extracted)
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            return None

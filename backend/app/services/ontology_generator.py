@@ -6,6 +6,10 @@ Interface 1: Analyze text content and generate entity and relationship type defi
 import json
 from typing import Dict, Any, List, Optional
 from ..utils.llm_client import LLMClient
+from ..utils.logger import get_logger
+
+
+logger = get_logger('mirofish.ontology_generator')
 
 
 # System prompt for ontology generation
@@ -194,11 +198,15 @@ class OntologyGenerator:
         ]
 
         # Call LLM
-        result = self.llm_client.chat_json(
-            messages=messages,
-            temperature=0.3,
-            max_tokens=4096
-        )
+        try:
+            result = self.llm_client.chat_json(
+                messages=messages,
+                temperature=0.3,
+                max_tokens=4096
+            )
+        except Exception as e:
+            logger.warning("Ontology LLM generation failed, using fallback ontology: %s", str(e))
+            result = self._build_fallback_ontology(simulation_requirement)
 
         # Validate and post-process
         result = self._validate_and_process(result)
@@ -254,6 +262,148 @@ Based on the above content, design entity types and relationship types suitable 
 
         return message
     
+    def _build_fallback_ontology(self, simulation_requirement: str) -> Dict[str, Any]:
+        """Build a deterministic ontology when the LLM output is unavailable/invalid."""
+        return {
+            "entity_types": [
+                {
+                    "name": "Creator",
+                    "description": "Content creator account participating in simulation.",
+                    "attributes": [
+                        {"name": "full_name", "type": "text", "description": "Display name"},
+                        {"name": "role", "type": "text", "description": "Creator role"}
+                    ],
+                    "examples": ["virtual influencer", "niche creator"]
+                },
+                {
+                    "name": "AudienceSegment",
+                    "description": "Audience cohort with similar interests and behavior.",
+                    "attributes": [
+                        {"name": "segment_name", "type": "text", "description": "Segment label"},
+                        {"name": "interest_profile", "type": "text", "description": "Key interests"}
+                    ],
+                    "examples": ["Gen Z trend followers", "premium subscribers"]
+                },
+                {
+                    "name": "Brand",
+                    "description": "Commercial brand account or sponsor in the ecosystem.",
+                    "attributes": [
+                        {"name": "brand_name", "type": "text", "description": "Brand name"}
+                    ],
+                    "examples": ["consumer brand", "fashion label"]
+                },
+                {
+                    "name": "Platform",
+                    "description": "Social or monetization platform involved in distribution.",
+                    "attributes": [
+                        {"name": "platform_name", "type": "text", "description": "Platform name"}
+                    ],
+                    "examples": ["X", "Reddit"]
+                },
+                {
+                    "name": "Community",
+                    "description": "Community hub where discussions and engagement occur.",
+                    "attributes": [
+                        {"name": "community_name", "type": "text", "description": "Community name"}
+                    ],
+                    "examples": ["fan group", "topic forum"]
+                },
+                {
+                    "name": "Competitor",
+                    "description": "Competing creator or organization in the same niche.",
+                    "attributes": [
+                        {"name": "competitor_name", "type": "text", "description": "Competitor name"}
+                    ],
+                    "examples": ["rival virtual influencer", "adjacent creator"]
+                },
+                {
+                    "name": "Regulator",
+                    "description": "Regulatory or policy actor that can enforce constraints.",
+                    "attributes": [
+                        {"name": "agency_name", "type": "text", "description": "Regulatory body name"}
+                    ],
+                    "examples": ["policy authority", "platform trust and safety"]
+                },
+                {
+                    "name": "MediaOutlet",
+                    "description": "Media channel that amplifies or critiques narratives.",
+                    "attributes": [
+                        {"name": "outlet_name", "type": "text", "description": "Media outlet name"}
+                    ],
+                    "examples": ["industry publication", "news account"]
+                },
+                {
+                    "name": "Person",
+                    "description": "Any individual person not fitting other specific person types.",
+                    "attributes": [
+                        {"name": "full_name", "type": "text", "description": "Full name of the person"},
+                        {"name": "role", "type": "text", "description": "Role or occupation"}
+                    ],
+                    "examples": ["ordinary citizen", "anonymous netizen"]
+                },
+                {
+                    "name": "Organization",
+                    "description": "Any organization not fitting other specific organization types.",
+                    "attributes": [
+                        {"name": "org_name", "type": "text", "description": "Name of the organization"},
+                        {"name": "org_type", "type": "text", "description": "Type of organization"}
+                    ],
+                    "examples": ["small business", "community group"]
+                }
+            ],
+            "edge_types": [
+                {
+                    "name": "POSTS_ON",
+                    "description": "An account publishes content on a platform.",
+                    "source_targets": [{"source": "Creator", "target": "Platform"}],
+                    "attributes": []
+                },
+                {
+                    "name": "ENGAGES_WITH",
+                    "description": "An audience segment engages with creator content.",
+                    "source_targets": [{"source": "AudienceSegment", "target": "Creator"}],
+                    "attributes": []
+                },
+                {
+                    "name": "SPONSORS",
+                    "description": "A brand sponsors a creator or campaign.",
+                    "source_targets": [{"source": "Brand", "target": "Creator"}],
+                    "attributes": []
+                },
+                {
+                    "name": "COMPETES_WITH",
+                    "description": "Competitive relationship between market actors.",
+                    "source_targets": [
+                        {"source": "Creator", "target": "Competitor"},
+                        {"source": "Brand", "target": "Brand"}
+                    ],
+                    "attributes": []
+                },
+                {
+                    "name": "REGULATES",
+                    "description": "Regulatory actor influences account/platform behavior.",
+                    "source_targets": [
+                        {"source": "Regulator", "target": "Platform"},
+                        {"source": "Regulator", "target": "Organization"}
+                    ],
+                    "attributes": []
+                },
+                {
+                    "name": "REPORTS_ON",
+                    "description": "Media outlet covers market actors or events.",
+                    "source_targets": [
+                        {"source": "MediaOutlet", "target": "Creator"},
+                        {"source": "MediaOutlet", "target": "Brand"}
+                    ],
+                    "attributes": []
+                }
+            ],
+            "analysis_summary": (
+                "Fallback ontology generated because the model response could not be parsed as JSON. "
+                f"Simulation requirement was: {simulation_requirement[:300]}"
+            )
+        }
+
     def _validate_and_process(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """Validate and post-process result"""
 

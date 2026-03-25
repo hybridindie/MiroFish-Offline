@@ -274,7 +274,8 @@ def build_graph():
             "project_id": "proj_xxxx",  // Required: from interface 1
             "graph_name": "Graph name",    // Optional
             "chunk_size": 500,          // Optional, default 500
-            "chunk_overlap": 50         // Optional, default 50
+            "chunk_overlap": 50,         // Optional, default 50
+            "batch_size": 3              // Optional, default from config
         }
 
     Response:
@@ -336,10 +337,18 @@ def build_graph():
         graph_name = data.get('graph_name', project.name or 'MiroFish Graph')
         chunk_size = data.get('chunk_size', project.chunk_size or Config.DEFAULT_CHUNK_SIZE)
         chunk_overlap = data.get('chunk_overlap', project.chunk_overlap or Config.DEFAULT_CHUNK_OVERLAP)
+        batch_size = data.get('batch_size', project.batch_size or Config.DEFAULT_GRAPH_BATCH_SIZE)
+
+        # Safety guard for invalid values
+        try:
+            batch_size = max(1, int(batch_size))
+        except (TypeError, ValueError):
+            batch_size = Config.DEFAULT_GRAPH_BATCH_SIZE
 
         # Update project configuration
         project.chunk_size = chunk_size
         project.chunk_overlap = chunk_overlap
+        project.batch_size = batch_size
 
         # Get extracted text
         text = ProjectManager.get_extracted_text(project_id)
@@ -435,7 +444,7 @@ def build_graph():
                 episode_uuids = builder.add_text_batches(
                     graph_id,
                     chunks,
-                    batch_size=3,
+                    batch_size=batch_size,
                     progress_callback=add_progress_callback
                 )
 
@@ -473,7 +482,8 @@ def build_graph():
                         "graph_id": graph_id,
                         "node_count": node_count,
                         "edge_count": edge_count,
-                        "chunk_count": total_chunks
+                        "chunk_count": total_chunks,
+                        "batch_size": batch_size
                     }
                 )
 

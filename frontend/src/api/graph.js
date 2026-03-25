@@ -6,16 +6,18 @@ import service, { requestWithRetry } from './index'
  * @returns {Promise}
  */
 export function generateOntology(formData) {
-  return requestWithRetry(() =>
-    service({
-      url: '/api/graph/ontology/generate',
-      method: 'post',
-      data: formData,
-      headers: {
-        'Content-Type': 'multipart/form-data'
-      }
-    })
-  )
+  // No retry: each call creates a new project on the backend.
+  // timeout:0 disables the Axios timeout; the backend fallback ontology
+  // ensures a response is always returned (within LLM_TIMEOUT_SECONDS).
+  return service({
+    url: '/api/graph/ontology/generate',
+    method: 'post',
+    data: formData,
+    timeout: 0,
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    }
+  })
 }
 
 /**
@@ -24,13 +26,12 @@ export function generateOntology(formData) {
  * @returns {Promise}
  */
 export function buildGraph(data) {
-  return requestWithRetry(() =>
-    service({
-      url: '/api/graph/build',
-      method: 'post',
-      data
-    })
-  )
+  // No retry: each call starts a new background build task.
+  return service({
+    url: '/api/graph/build',
+    method: 'post',
+    data
+  })
 }
 
 /**
