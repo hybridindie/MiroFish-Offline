@@ -6,6 +6,7 @@ Includes: CRUD, NER/RE-based text ingestion, hybrid search, retry logic.
 """
 
 import json
+import re
 import time
 import uuid
 import logging
@@ -173,13 +174,19 @@ class Neo4jStorage(GraphStorage):
     # Add data (NER → nodes/edges)
     # ----------------------------------------------------------------
 
-    def add_text(self, graph_id: str, text: str) -> str:
+    def add_text(
+        self,
+        graph_id: str,
+        text: str,
+        ontology: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """Process text: NER/RE → batch embed → create nodes/edges → return episode_id."""
         episode_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
 
-        # Get ontology for NER guidance
-        ontology = self.get_ontology(graph_id)
+        # Reuse pre-fetched ontology when available to avoid one DB read per chunk.
+        if ontology is None:
+            ontology = self.get_ontology(graph_id)
 
         # Extract entities and relations
         logger.info(f"[add_text] Starting NER extraction for chunk ({len(text)} chars)...")
@@ -230,121 +237,132 @@ class Neo4jStorage(GraphStorage):
 
             self._call_with_retry(session.execute_write, _create_episode)
 
-            # MERGE entities (upsert by graph_id + name + primary label)
-            entity_uuid_map: Dict[str, str] = {}  # name_lower -> uuid
+            # MERGE entities in one UNWIND write (upsert by graph_id + name_lower)
+            entity_rows: List[Dict[str, Any]] = []
+            labels_by_type: Dict[str, List[str]] = {}
             for idx, entity in enumerate(entities):
                 ename = entity["name"]
-                etype = entity["type"]
+                etype = entity.get("type", "Entity")
                 attrs = entity.get("attributes", {})
                 summary_text = entity_summaries[idx]
                 embedding = entity_embeddings[idx] if idx < len(entity_embeddings) else []
+                name_lower = ename.lower()
 
-                e_uuid = str(uuid.uuid4())
-                entity_uuid_map[ename.lower()] = e_uuid
+                entity_rows.append({
+                    "name_lower": name_lower,
+                    "uuid": str(uuid.uuid4()),
+                    "name": ename,
+                    "summary": summary_text,
+                    "attrs_json": json.dumps(attrs, ensure_ascii=False),
+                    "embedding": embedding,
+                })
 
-                def _merge_entity(tx, _uuid=e_uuid, _name=ename, _type=etype,
-                                  _attrs=attrs, _embedding=embedding,
-                                  _summary=summary_text, _now=now):
-                    # MERGE by graph_id + lowercase name to deduplicate
+                if etype and etype != "Entity":
+                    labels_by_type.setdefault(etype, []).append(name_lower)
+
+            entity_uuid_map: Dict[str, str] = {}
+            if entity_rows:
+                def _merge_entities(tx):
                     result = tx.run(
                         """
-                        MERGE (n:Entity {graph_id: $gid, name_lower: $name_lower})
+                        UNWIND $rows AS row
+                        MERGE (n:Entity {graph_id: $gid, name_lower: row.name_lower})
                         ON CREATE SET
-                            n.uuid = $uuid,
-                            n.name = $name,
-                            n.summary = $summary,
-                            n.attributes_json = $attrs_json,
-                            n.embedding = $embedding,
+                            n.uuid = row.uuid,
+                            n.name = row.name,
+                            n.summary = row.summary,
+                            n.attributes_json = row.attrs_json,
+                            n.embedding = row.embedding,
                             n.created_at = $now
                         ON MATCH SET
                             n.summary = CASE WHEN n.summary = '' OR n.summary IS NULL
-                                THEN $summary ELSE n.summary END,
-                            n.attributes_json = $attrs_json,
-                            n.embedding = $embedding
-                        RETURN n.uuid AS uuid
+                                THEN row.summary ELSE n.summary END,
+                            n.attributes_json = row.attrs_json,
+                            n.embedding = row.embedding
+                        RETURN row.name_lower AS name_lower, n.uuid AS uuid
                         """,
                         gid=graph_id,
-                        name_lower=_name.lower(),
-                        uuid=_uuid,
-                        name=_name,
-                        summary=_summary,
-                        attrs_json=json.dumps(_attrs, ensure_ascii=False),
-                        embedding=_embedding,
-                        now=_now,
+                        rows=entity_rows,
+                        now=now,
                     )
-                    record = result.single()
-                    return record["uuid"] if record else _uuid
+                    return {record["name_lower"]: record["uuid"] for record in result}
 
-                actual_uuid = self._call_with_retry(session.execute_write, _merge_entity)
-                entity_uuid_map[ename.lower()] = actual_uuid
+                entity_uuid_map = self._call_with_retry(session.execute_write, _merge_entities)
 
-                # Add entity type label
-                if etype and etype != "Entity":
-                    try:
-                        def _add_label(tx, _name_lower=ename.lower()):
-                            tx.run(
-                                f"MATCH (n:Entity {{graph_id: $gid, name_lower: $nl}}) SET n:`{etype}`",
-                                gid=graph_id,
-                                nl=_name_lower,
-                            )
-                        self._call_with_retry(session.execute_write, _add_label)
-                    except Exception as e:
-                        logger.warning(f"Failed to add label '{etype}' to '{ename}': {e}")
+            # Add entity type labels in grouped UNWIND writes (one query per label type)
+            for etype, name_lowers in labels_by_type.items():
+                try:
+                    # Sanitize the label coming from LLM output: escape backticks by
+                    # doubling them (Neo4j convention) so they cannot break the query.
+                    safe_etype = re.sub(r'[^\w ]', '', etype).strip().replace(' ', '_') or 'Unknown'
+                    def _add_label_group(tx, _name_lowers=name_lowers, _safe_etype=safe_etype):
+                        tx.run(
+                            f"""
+                            UNWIND $name_lowers AS nl
+                            MATCH (n:Entity {{graph_id: $gid, name_lower: nl}})
+                            SET n:`{_safe_etype}`
+                            """,
+                            gid=graph_id,
+                            name_lowers=_name_lowers,
+                        )
 
-            # Create relations
+                    self._call_with_retry(session.execute_write, _add_label_group)
+                except Exception as e:
+                    logger.warning("Failed to add label '%s' to %d entities: %s", safe_etype, len(name_lowers), e)
+
+            # Create relations in one UNWIND write
+            relation_rows: List[Dict[str, Any]] = []
             for idx, relation in enumerate(relations):
                 source_name = relation["source"]
                 target_name = relation["target"]
-                rtype = relation["type"]
-                fact = relation["fact"]
-
                 source_uuid = entity_uuid_map.get(source_name.lower())
                 target_uuid = entity_uuid_map.get(target_name.lower())
 
                 if not source_uuid or not target_uuid:
                     logger.warning(
-                        f"Skipping relation {source_name}->{target_name}: "
-                        f"entity not found in extraction results"
+                        "Skipping relation %s->%s: entity not found in extraction results",
+                        source_name,
+                        target_name,
                     )
                     continue
 
-                fact_embedding = relation_embeddings[idx] if idx < len(relation_embeddings) else []
-                r_uuid = str(uuid.uuid4())
+                relation_rows.append({
+                    "src_uuid": source_uuid,
+                    "tgt_uuid": target_uuid,
+                    "uuid": str(uuid.uuid4()),
+                    "name": relation["type"],
+                    "fact": relation["fact"],
+                    "fact_embedding": relation_embeddings[idx] if idx < len(relation_embeddings) else [],
+                    "episode_id": episode_id,
+                })
 
-                def _create_relation(tx, _r_uuid=r_uuid, _source_uuid=source_uuid,
-                                     _target_uuid=target_uuid, _rtype=rtype,
-                                     _fact=fact, _fact_emb=fact_embedding,
-                                     _episode_id=episode_id, _now=now):
+            if relation_rows:
+                def _create_relations(tx):
                     tx.run(
                         """
-                        MATCH (src:Entity {uuid: $src_uuid})
-                        MATCH (tgt:Entity {uuid: $tgt_uuid})
+                        UNWIND $rows AS row
+                        MATCH (src:Entity {uuid: row.src_uuid})
+                        MATCH (tgt:Entity {uuid: row.tgt_uuid})
                         CREATE (src)-[r:RELATION {
-                            uuid: $uuid,
+                            uuid: row.uuid,
                             graph_id: $gid,
-                            name: $name,
-                            fact: $fact,
-                            fact_embedding: $fact_embedding,
+                            name: row.name,
+                            fact: row.fact,
+                            fact_embedding: row.fact_embedding,
                             attributes_json: '{}',
-                            episode_ids: [$episode_id],
+                            episode_ids: [row.episode_id],
                             created_at: $now,
                             valid_at: null,
                             invalid_at: null,
                             expired_at: null
                         }]->(tgt)
                         """,
-                        src_uuid=_source_uuid,
-                        tgt_uuid=_target_uuid,
-                        uuid=_r_uuid,
                         gid=graph_id,
-                        name=_rtype,
-                        fact=_fact,
-                        fact_embedding=_fact_emb,
-                        episode_id=_episode_id,
-                        now=_now,
+                        rows=relation_rows,
+                        now=now,
                     )
 
-                self._call_with_retry(session.execute_write, _create_relation)
+                self._call_with_retry(session.execute_write, _create_relations)
 
         logger.info(f"[add_text] Chunk done: episode={episode_id}")
         return episode_id

@@ -43,6 +43,7 @@ class GraphBuilderService:
     def __init__(self, storage: GraphStorage):
         self.storage = storage
         self.task_manager = TaskManager()
+        self._active_ontology: Optional[Dict[str, Any]] = None
 
     def build_graph_async(
         self,
@@ -133,8 +134,11 @@ class GraphBuilderService:
 
             # 4. Send data in batches (NER + embedding + Neo4j insert — synchronous)
             episode_uuids = self.add_text_batches(
-                graph_id, chunks, batch_size,
-                lambda msg, prog: self.task_manager.update_task(
+                graph_id=graph_id,
+                chunks=chunks,
+                batch_size=batch_size,
+                ontology=ontology,
+                progress_callback=lambda msg, prog: self.task_manager.update_task(
                     task_id,
                     progress=20 + int(prog * 0.6),  # 20-80%
                     message=msg
@@ -181,18 +185,21 @@ class GraphBuilderService:
         The NER extractor reads this ontology to guide extraction.
         """
         self.storage.set_ontology(graph_id, ontology)
+        self._active_ontology = ontology
 
     def add_text_batches(
         self,
         graph_id: str,
         chunks: List[str],
         batch_size: int = 3,
+        ontology: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[Callable] = None
     ) -> List[str]:
         """Add text in batches to graph, return uuid list of all episodes"""
         episode_uuids = []
         total_chunks = len(chunks)
         total_batches = (total_chunks + batch_size - 1) // batch_size
+        effective_ontology = ontology if ontology is not None else self._active_ontology
 
         logger.info(f"[graph_build] Starting: {total_chunks} chunks, {total_batches} batches (batch_size={batch_size})")
 
@@ -216,7 +223,7 @@ class GraphBuilderService:
                 )
                 t0 = time.time()
                 try:
-                    episode_id = self.storage.add_text(graph_id, chunk)
+                    episode_id = self.storage.add_text(graph_id, chunk, ontology=effective_ontology)
                     episode_uuids.append(episode_id)
                     elapsed = time.time() - t0
                     logger.info(

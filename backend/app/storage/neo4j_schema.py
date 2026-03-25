@@ -20,6 +20,12 @@ CREATE CONSTRAINT episode_uuid IF NOT EXISTS
 FOR (ep:Episode) REQUIRE ep.uuid IS UNIQUE
 """
 
+# Lookup index for hot-path entity upsert MERGE (graph_id + name_lower)
+CREATE_ENTITY_GRAPH_NAME_INDEX = """
+CREATE INDEX entity_graph_name_lookup IF NOT EXISTS
+FOR (n:Entity) ON (n.graph_id, n.name_lower)
+"""
+
 # Vector indexes (Neo4j 5.11+)
 CREATE_ENTITY_VECTOR_INDEX = """
 CREATE VECTOR INDEX entity_embedding IF NOT EXISTS
@@ -55,6 +61,7 @@ ALL_SCHEMA_QUERIES = [
     CREATE_GRAPH_UUID_CONSTRAINT,
     CREATE_ENTITY_UUID_CONSTRAINT,
     CREATE_EPISODE_UUID_CONSTRAINT,
+    CREATE_ENTITY_GRAPH_NAME_INDEX,
     CREATE_ENTITY_VECTOR_INDEX,
     CREATE_RELATION_VECTOR_INDEX,
     CREATE_ENTITY_FULLTEXT_INDEX,
