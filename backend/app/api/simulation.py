@@ -372,6 +372,11 @@ def prepare_simulation():
             "entity_types": ["Student", "PublicFigure"],  // Optional，Specified entity type
             "use_llm_for_profiles": true,                 // Optional，IsOtherwise useLLMGeneratepersona
             "parallel_profile_count": 5,                  // Optional, number of personas to generate in parallel, default 5
+            "enable_graph_search": false,                 // Optional, disable per-entity graph search for faster profile generation
+            "profile_detail_level": "fast",              // Optional: fast|balanced|detailed
+            "realtime_save_every_n": 10,                  // Optional, checkpoint profile writes every N profiles
+            "realtime_save_interval_seconds": 2,          // Optional, checkpoint profile writes every N seconds
+            "config_mode": "fast",                       // Optional: fast|balanced|detailed simulation config generation
             "force_regenerate": false                     // Optional，ForceGenerate，Defaultfalse
         }
     
@@ -391,6 +396,12 @@ def prepare_simulation():
     import os
     from ..models.task import TaskManager, TaskStatus
     from ..config import Config
+
+    default_enable_graph_search = getattr(Config, 'OASIS_PROFILE_ENABLE_GRAPH_SEARCH', False)
+    default_profile_detail_level = getattr(Config, 'OASIS_PROFILE_DETAIL_LEVEL', 'balanced')
+    default_realtime_save_every_n = getattr(Config, 'OASIS_REALTIME_SAVE_EVERY_N', 10)
+    default_realtime_save_interval_seconds = getattr(Config, 'OASIS_REALTIME_SAVE_INTERVAL_SECONDS', 2)
+    default_config_mode = getattr(Config, 'SIM_CONFIG_MODE', 'balanced')
     
     try:
         data = request.get_json() or {}
@@ -457,31 +468,32 @@ def prepare_simulation():
         entity_types_list = data.get('entity_types')
         use_llm_for_profiles = data.get('use_llm_for_profiles', True)
         parallel_profile_count = data.get('parallel_profile_count', 5)
+        enable_graph_search = data.get('enable_graph_search', default_enable_graph_search)
+        profile_detail_level = data.get('profile_detail_level', default_profile_detail_level)
+        realtime_save_every_n = data.get('realtime_save_every_n', default_realtime_save_every_n)
+        realtime_save_interval_seconds = data.get('realtime_save_interval_seconds', default_realtime_save_interval_seconds)
+        config_mode = data.get('config_mode', default_config_mode)
+
+        if isinstance(enable_graph_search, str):
+            enable_graph_search = enable_graph_search.strip().lower() in {'1', 'true', 'yes', 'on'}
+        try:
+            parallel_profile_count = max(1, int(parallel_profile_count))
+        except (TypeError, ValueError):
+            parallel_profile_count = 5
+        try:
+            realtime_save_every_n = max(1, int(realtime_save_every_n))
+        except (TypeError, ValueError):
+            realtime_save_every_n = default_realtime_save_every_n
+        try:
+            realtime_save_interval_seconds = max(1, int(realtime_save_interval_seconds))
+        except (TypeError, ValueError):
+            realtime_save_interval_seconds = default_realtime_save_interval_seconds
         
         # ========== Get GraphStorage（Capture reference before background task starts） ==========
         storage = current_app.extensions.get('neo4j_storage')
         if not storage:
             raise ValueError("GraphStorage not initialized — check Neo4j connection")
 
-        # ========== Synchronously get entity count（Before background task starts） ==========
-        # This way frontend when callingprepareCan immediately getExpected total agents
-        try:
-            logger.info(f"Synchronously get entity count: graph_id={state.graph_id}")
-            reader = EntityReader(storage)
-            # Quickly read entities (no edge information, only statistics required)
-            filtered_preview = reader.filter_defined_entities(
-                graph_id=state.graph_id,
-                defined_entity_types=entity_types_list,
-                enrich_with_edges=False  # No edge information，Speed up
-            )
-            # Save entity count to status（For frontend to get immediately）
-            state.entities_count = filtered_preview.filtered_count
-            state.entity_types = list(filtered_preview.entity_types)
-            logger.info(f"Expected entity count: {filtered_preview.filtered_count}, [type][model]: {filtered_preview.entity_types}")
-        except Exception as e:
-            logger.warning(f"Synchronously get entity countFailed（Will retry in background task）: {e}")
-            # Failure does not affect subsequent process，Background task will retry
-        
         # Create async task
         task_manager = TaskManager()
         task_id = task_manager.create_task(
@@ -580,6 +592,11 @@ def prepare_simulation():
                     progress_callback=progress_callback,
                     parallel_profile_count=parallel_profile_count,
                     storage=storage,
+                    enable_graph_search=enable_graph_search,
+                    profile_detail_level=profile_detail_level,
+                    realtime_save_every_n=realtime_save_every_n,
+                    realtime_save_interval_seconds=realtime_save_interval_seconds,
+                    config_mode=config_mode,
                 )
                 
                 # Task complete
@@ -611,8 +628,8 @@ def prepare_simulation():
                 "status": "preparing",
                 "message": "Preparation task started，Please via /api/simulation/prepare/status Query progress",
                 "already_prepared": False,
-                "expected_entities_count": state.entities_count,  # Expected number of entities to process
-                "entity_types": state.entity_types  # Entity type list
+                "expected_entities_count": state.entities_count,
+                "entity_types": state.entity_types,
             }
         })
         
@@ -663,6 +680,7 @@ def get_prepare_status():
     
     try:
         data = request.get_json() or {}
+        manager = SimulationManager()
         
         task_id = data.get('task_id')
         simulation_id = data.get('simulation_id')
@@ -730,6 +748,16 @@ def get_prepare_status():
         
         task_dict = task.to_dict()
         task_dict["already_prepared"] = False
+
+        simulation_id_from_task = simulation_id or task_dict.get("metadata", {}).get("simulation_id")
+        if simulation_id_from_task:
+            simulation_state = manager.get_simulation(simulation_id_from_task)
+            if simulation_state:
+                task_dict["simulation_id"] = simulation_id_from_task
+                task_dict["expected_entities_count"] = simulation_state.entities_count
+                task_dict["entity_types"] = simulation_state.entity_types
+                if simulation_state.entities_count > 0:
+                    task_dict["entity_count_ready"] = True
         
         return jsonify({
             "success": True,

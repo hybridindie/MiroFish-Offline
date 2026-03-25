@@ -24,6 +24,9 @@ from .entity_reader import EntityNode
 
 logger = get_logger('mirofish.simulation_config')
 
+DEFAULT_SIM_CONFIG_MODE = getattr(Config, 'SIM_CONFIG_MODE', 'balanced')
+DEFAULT_AGENTS_PER_BATCH = getattr(Config, 'SIM_CONFIG_AGENTS_PER_BATCH', 20)
+
 # Time zone configuration for Chinese work schedules (Beijing Time)
 CHINA_TIMEZONE_CONFIG = {
     # Dead hours (almost no activity)
@@ -211,8 +214,8 @@ class SimulationConfigGenerator:
 
     # Maximum context length in characters
     MAX_CONTEXT_LENGTH = 50000
-    # Number of agents per batch
-    AGENTS_PER_BATCH = 15
+    # Number of agents per batch (overridable via SIM_CONFIG_AGENTS_PER_BATCH)
+    AGENTS_PER_BATCH = DEFAULT_AGENTS_PER_BATCH
 
     # Context truncation length for each step (characters)
     TIME_CONFIG_CONTEXT_LENGTH = 10000   # Time configuration
@@ -250,6 +253,7 @@ class SimulationConfigGenerator:
         enable_twitter: bool = True,
         enable_reddit: bool = True,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        config_mode: str = DEFAULT_SIM_CONFIG_MODE,
     ) -> SimulationParameters:
         """
         Intelligently generate complete simulation configuration (step-by-step generation)
@@ -268,7 +272,17 @@ class SimulationConfigGenerator:
         Returns:
             SimulationParameters: Complete simulation parameters
         """
-        logger.info(f"Starting intelligent simulation configuration generation: simulation_id={simulation_id}, entities={len(entities)}")
+        mode = (config_mode or 'balanced').strip().lower()
+        if mode not in {'fast', 'balanced', 'detailed'}:
+            mode = 'balanced'
+
+        logger.info(
+            "Starting intelligent simulation configuration generation: simulation_id=%s, entities=%d, mode=%s, agents_per_batch=%d",
+            simulation_id,
+            len(entities),
+            mode,
+            self.AGENTS_PER_BATCH,
+        )
         
         # Calculate total steps
         num_batches = math.ceil(len(entities) / self.AGENTS_PER_BATCH)
@@ -290,22 +304,40 @@ class SimulationConfigGenerator:
         )
         
         reasoning_parts = []
+        timing_stats: Dict[str, float] = {}
         
         # ========== Step 1: Generate time configuration ==========
         report_progress(1, "Generating time configuration...")
+        t0 = datetime.now().timestamp()
         num_entities = len(entities)
-        time_config_result = self._generate_time_config(context, num_entities)
+        if mode == 'fast':
+            time_config_result = self._get_default_time_config(num_entities)
+            time_config_result['reasoning'] = 'Fast mode: used default time configuration.'
+        else:
+            time_config_result = self._generate_time_config(context, num_entities)
         time_config = self._parse_time_config(time_config_result, num_entities)
+        timing_stats['time_config_seconds'] = round(datetime.now().timestamp() - t0, 2)
         reasoning_parts.append(f"Time config: {time_config_result.get('reasoning', 'Success')}")
 
         # ========== Step 2: Generate event configuration ==========
         report_progress(2, "Generating event configuration and hot topics...")
-        event_config_result = self._generate_event_config(context, simulation_requirement, entities)
+        t0 = datetime.now().timestamp()
+        if mode == 'fast':
+            event_config_result = {
+                "hot_topics": [],
+                "narrative_direction": "Fast mode: default event narrative.",
+                "initial_posts": [],
+                "reasoning": "Fast mode: skipped LLM event generation.",
+            }
+        else:
+            event_config_result = self._generate_event_config(context, simulation_requirement, entities)
         event_config = self._parse_event_config(event_config_result)
+        timing_stats['event_config_seconds'] = round(datetime.now().timestamp() - t0, 2)
         reasoning_parts.append(f"Event config: {event_config_result.get('reasoning', 'Success')}")
 
         # ========== Step 3-N: Generate agent configurations in batches ==========
         all_agent_configs = []
+        agent_phase_start = datetime.now().timestamp()
         for batch_idx in range(num_batches):
             start_idx = batch_idx * self.AGENTS_PER_BATCH
             end_idx = min(start_idx + self.AGENTS_PER_BATCH, len(entities))
@@ -316,13 +348,36 @@ class SimulationConfigGenerator:
                 f"Generating agent configuration ({start_idx + 1}-{end_idx}/{len(entities)})..."
             )
             
-            batch_configs = self._generate_agent_configs_batch(
-                context=context,
-                entities=batch_entities,
-                start_idx=start_idx,
-                simulation_requirement=simulation_requirement
-            )
+            if mode == 'fast':
+                batch_configs = []
+                for i, entity in enumerate(batch_entities):
+                    cfg = self._generate_agent_config_by_rule(entity)
+                    batch_configs.append(
+                        AgentActivityConfig(
+                            agent_id=start_idx + i,
+                            entity_uuid=entity.uuid,
+                            entity_name=entity.name,
+                            entity_type=entity.get_entity_type() or "Unknown",
+                            activity_level=cfg.get("activity_level", 0.5),
+                            posts_per_hour=cfg.get("posts_per_hour", 0.5),
+                            comments_per_hour=cfg.get("comments_per_hour", 1.0),
+                            active_hours=cfg.get("active_hours", list(range(9, 23))),
+                            response_delay_min=cfg.get("response_delay_min", 5),
+                            response_delay_max=cfg.get("response_delay_max", 60),
+                            sentiment_bias=cfg.get("sentiment_bias", 0.0),
+                            stance=cfg.get("stance", "neutral"),
+                            influence_weight=cfg.get("influence_weight", 1.0),
+                        )
+                    )
+            else:
+                batch_configs = self._generate_agent_configs_batch(
+                    context=context,
+                    entities=batch_entities,
+                    start_idx=start_idx,
+                    simulation_requirement=simulation_requirement
+                )
             all_agent_configs.extend(batch_configs)
+        timing_stats['agent_config_seconds'] = round(datetime.now().timestamp() - agent_phase_start, 2)
         
         reasoning_parts.append(f"Agent config: Successfully generated {len(all_agent_configs)}")
 
@@ -334,6 +389,7 @@ class SimulationConfigGenerator:
 
         # ========== Final step: Generate platform configuration ==========
         report_progress(total_steps, "Generating platform configuration...")
+        platform_phase_start = datetime.now().timestamp()
         twitter_config = None
         reddit_config = None
         
@@ -356,6 +412,7 @@ class SimulationConfigGenerator:
                 viral_threshold=15,
                 echo_chamber_strength=0.6
             )
+        timing_stats['platform_config_seconds'] = round(datetime.now().timestamp() - platform_phase_start, 2)
         
         # Build final parameters
         params = SimulationParameters(
@@ -370,7 +427,15 @@ class SimulationConfigGenerator:
             reddit_config=reddit_config,
             llm_model=self.model_name,
             llm_base_url=self.base_url,
-            generation_reasoning=" | ".join(reasoning_parts)
+            generation_reasoning=" | ".join(reasoning_parts + [f"timings={timing_stats}"])
+        )
+
+        logger.info(
+            "Config generation timings: time=%.2fs event=%.2fs agents=%.2fs platform=%.2fs",
+            timing_stats.get('time_config_seconds', 0.0),
+            timing_stats.get('event_config_seconds', 0.0),
+            timing_stats.get('agent_config_seconds', 0.0),
+            timing_stats.get('platform_config_seconds', 0.0),
         )
         
         logger.info(f"Simulation configuration generation complete: {len(params.agent_configs)} agent configurations")

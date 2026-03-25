@@ -20,6 +20,12 @@ from .simulation_config_generator import SimulationConfigGenerator, SimulationPa
 
 logger = get_logger('mirofish.simulation')
 
+DEFAULT_PROFILE_ENABLE_GRAPH_SEARCH = getattr(Config, 'OASIS_PROFILE_ENABLE_GRAPH_SEARCH', False)
+DEFAULT_PROFILE_DETAIL_LEVEL = getattr(Config, 'OASIS_PROFILE_DETAIL_LEVEL', 'balanced')
+DEFAULT_REALTIME_SAVE_EVERY_N = getattr(Config, 'OASIS_REALTIME_SAVE_EVERY_N', 10)
+DEFAULT_REALTIME_SAVE_INTERVAL_SECONDS = getattr(Config, 'OASIS_REALTIME_SAVE_INTERVAL_SECONDS', 2)
+DEFAULT_SIM_CONFIG_MODE = getattr(Config, 'SIM_CONFIG_MODE', 'balanced')
+
 
 class SimulationStatus(str, Enum):
     """Simulation status"""
@@ -236,6 +242,11 @@ class SimulationManager:
         progress_callback: Optional[callable] = None,
         parallel_profile_count: int = 3,
         storage: 'GraphStorage' = None,
+        enable_graph_search: bool = DEFAULT_PROFILE_ENABLE_GRAPH_SEARCH,
+        profile_detail_level: str = DEFAULT_PROFILE_DETAIL_LEVEL,
+        realtime_save_every_n: int = DEFAULT_REALTIME_SAVE_EVERY_N,
+        realtime_save_interval_seconds: int = DEFAULT_REALTIME_SAVE_INTERVAL_SECONDS,
+        config_mode: str = DEFAULT_SIM_CONFIG_MODE,
     ) -> SimulationState:
         """
         Prepare simulation environment (fully automated)
@@ -315,7 +326,12 @@ class SimulationManager:
                 )
             
             # Pass graph_id to enable graph retrieval functionality, get richer context
-            generator = OasisProfileGenerator(storage=storage, graph_id=state.graph_id)
+            generator = OasisProfileGenerator(
+                storage=storage,
+                graph_id=state.graph_id,
+                enable_graph_search=enable_graph_search,
+                profile_detail_level=profile_detail_level,
+            )
             
             def profile_progress(current, total, msg):
                 if progress_callback:
@@ -345,7 +361,11 @@ class SimulationManager:
                 graph_id=state.graph_id,  # Pass graph_id for graph retrieval
                 parallel_count=parallel_profile_count,  # Parallel generation count
                 realtime_output_path=realtime_output_path,  # Real-time save path
-                output_platform=realtime_platform  # Output format
+                output_platform=realtime_platform,  # Output format
+                enable_graph_search=enable_graph_search,
+                profile_detail_level=profile_detail_level,
+                realtime_save_every_n=realtime_save_every_n,
+                realtime_save_interval_seconds=realtime_save_interval_seconds,
             )
             
             state.profiles_count = len(profiles)
@@ -410,7 +430,8 @@ class SimulationManager:
                 document_text=document_text,
                 entities=filtered.entities,
                 enable_twitter=state.enable_twitter,
-                enable_reddit=state.enable_reddit
+                enable_reddit=state.enable_reddit,
+                config_mode=config_mode,
             )
             
             if progress_callback:
