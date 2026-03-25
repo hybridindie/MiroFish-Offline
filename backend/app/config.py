@@ -80,6 +80,19 @@ class Config:
     except (ValueError, AttributeError):
         NER_MAX_TOKENS = 1024
 
+    # Extra token allowance added on top of the proportional JSON budget to
+    # cover the <think> reasoning block emitted by reasoning models (e.g.
+    # qwen3, deepseek-r1, qwq).  These tokens count against max_tokens but
+    # are stripped before JSON parsing, so without this headroom the model
+    # exhausts its budget on thinking and returns an empty JSON response.
+    # Set to 0 for non-reasoning models.  Default 1024 covers typical NER
+    # reasoning traces without significantly increasing latency.
+    _ner_think_overhead_str = os.environ.get('NER_THINK_OVERHEAD', '1024')
+    try:
+        NER_THINK_OVERHEAD = max(0, int(_ner_think_overhead_str.strip()))
+    except (ValueError, AttributeError):
+        NER_THINK_OVERHEAD = 1024
+
     # When True, relation (edge) embeddings are stored as empty vectors during
     # the graph build and can be computed later via embed_pending_relations().
     # Set to False (default) for full embeddings on every chunk.

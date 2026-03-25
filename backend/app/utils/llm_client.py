@@ -93,7 +93,14 @@ class LLMClient:
         response = self.client.chat.completions.create(**kwargs)
         content = response.choices[0].message.content
         # Some models (like MiniMax M2.5) include <think>thinking content in response, need to remove
-        content = re.sub(r'<think>[\s\S]*?</think>', '', content).strip()
+        has_think = bool(re.search(r'<think>[\s\S]*?</think>', content or '', re.IGNORECASE))
+        content = re.sub(r'<think>[\s\S]*?</think>', '', content or '', flags=re.IGNORECASE).strip()
+        if has_think and not content:
+            logger.warning(
+                "LLM response contained only <think> content — token budget exhausted by "
+                "reasoning trace. Increase NER_THINK_OVERHEAD (currently %d) or NER_MAX_TOKENS.",
+                Config.NER_THINK_OVERHEAD,
+            )
         return content
 
     def chat_json(
