@@ -201,19 +201,31 @@ class Neo4jStorage(GraphStorage):
         # --- Batch embed all texts at once ---
         entity_summaries = [f"{e['name']} ({e['type']})" for e in entities]
         fact_texts = [r.get("fact", f"{r['source']} {r['type']} {r['target']}") for r in relations]
-        all_texts_to_embed = entity_summaries + fact_texts
 
-        all_embeddings: list = []
-        if all_texts_to_embed:
-            logger.info(f"[add_text] Batch-embedding {len(all_texts_to_embed)} texts...")
+        # Entity embeddings are always computed (needed for vector search).
+        entity_embeddings: list = []
+        if entity_summaries:
+            logger.info(f"[add_text] Embedding {len(entity_summaries)} entities...")
             try:
-                all_embeddings = self._embedding.embed_batch(all_texts_to_embed)
+                entity_embeddings = self._embedding.embed_batch(entity_summaries)
             except Exception as e:
-                logger.warning(f"[add_text] Batch embedding failed, falling back to empty: {e}")
-                all_embeddings = [[] for _ in all_texts_to_embed]
+                logger.warning(f"[add_text] Entity embedding failed, using empty vectors: {e}")
+                entity_embeddings = [[] for _ in entity_summaries]
 
-        entity_embeddings = all_embeddings[:len(entities)]
-        relation_embeddings = all_embeddings[len(entities):]
+        # Relation embeddings may be deferred to save latency during bulk build.
+        defer_rel_embed = Config.DEFER_RELATION_EMBEDDINGS
+        relation_embeddings: list = []
+        if fact_texts and not defer_rel_embed:
+            logger.info(f"[add_text] Embedding {len(fact_texts)} relations...")
+            try:
+                relation_embeddings = self._embedding.embed_batch(fact_texts)
+            except Exception as e:
+                logger.warning(f"[add_text] Relation embedding failed, using empty vectors: {e}")
+                relation_embeddings = [[] for _ in fact_texts]
+        elif fact_texts and defer_rel_embed:
+            logger.debug("[add_text] Relation embeddings deferred (DEFER_RELATION_EMBEDDINGS=true)")
+            relation_embeddings = [[] for _ in fact_texts]
+
         logger.info(f"[add_text] Embedding done, writing to Neo4j...")
 
         with self._driver.session() as session:
@@ -391,6 +403,70 @@ class Neo4jStorage(GraphStorage):
             logger.info(f"Processed chunk {i + 1}/{total}")
 
         return episode_ids
+
+    def embed_pending_relations(self, graph_id: str) -> int:
+        """
+        Back-fill relation embeddings that were stored as empty vectors.
+
+        Use this after a build completed with DEFER_RELATION_EMBEDDINGS=true
+        to compute and persist fact embeddings without blocking the build.
+
+        Returns:
+            Number of relations updated.
+        """
+        # Fetch all relations with empty/missing fact_embedding
+        def _fetch_pending(tx):
+            result = tx.run(
+                """
+                MATCH ()-[r:RELATION {graph_id: $gid}]->()
+                WHERE r.fact_embedding IS NULL OR size(r.fact_embedding) = 0
+                RETURN r.uuid AS uuid, r.fact AS fact
+                """,
+                gid=graph_id,
+            )
+            return [(record["uuid"], record["fact"] or "") for record in result]
+
+        with self._driver.session() as session:
+            pending = self._call_with_retry(session.execute_read, _fetch_pending)
+
+        if not pending:
+            logger.info("[embed_pending_relations] No pending relations for graph %s", graph_id)
+            return 0
+
+        uuids = [p[0] for p in pending]
+        facts = [p[1] for p in pending]
+        logger.info(
+            "[embed_pending_relations] Computing embeddings for %d relations in graph %s",
+            len(pending), graph_id
+        )
+
+        try:
+            embeddings = self._embedding.embed_batch(facts)
+        except Exception as e:
+            logger.error("[embed_pending_relations] Embedding failed: %s", e)
+            return 0
+
+        # Write embeddings back in one UNWIND transaction
+        rows = [{"uuid": u, "embedding": emb} for u, emb in zip(uuids, embeddings)]
+        def _write_embeddings(tx):
+            result = tx.run(
+                """
+                UNWIND $rows AS row
+                MATCH ()-[r:RELATION {graph_id: $gid, uuid: row.uuid}]->()
+                SET r.fact_embedding = row.embedding
+                RETURN count(r) AS updated
+                """,
+                rows=rows,
+                gid=graph_id,
+            )
+            record = result.single()
+            return record["updated"] if record else 0
+
+        with self._driver.session() as session:
+            updated_count = self._call_with_retry(session.execute_write, _write_embeddings)
+
+        logger.info("[embed_pending_relations] Updated %d relations", updated_count)
+        return updated_count
 
     def wait_for_processing(
         self,

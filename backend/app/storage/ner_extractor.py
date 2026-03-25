@@ -9,6 +9,7 @@ entities and relations from text chunks, guided by the graph's ontology.
 import logging
 from typing import Dict, Any, List, Optional
 
+from ..config import Config
 from ..utils.llm_client import LLMClient
 
 logger = logging.getLogger('mirofish.ner_extractor')
@@ -50,6 +51,18 @@ class NERExtractor:
         self.llm = llm_client or LLMClient()
         self.max_retries = max_retries
 
+    def _token_budget(self, text: str) -> int:
+        """Return a token budget proportional to the input text length.
+
+        Formula: ``max(256, len(text) // 2)``, then capped at
+        ``Config.NER_MAX_TOKENS``.  For text shorter than 512 characters the
+        floor of 256 always applies regardless of NER_MAX_TOKENS; setting
+        NER_MAX_TOKENS does not restore the old fixed-4096 behaviour for short
+        chunks — it only raises the ceiling for longer ones.
+        """
+        proportional = max(256, len(text) // 2)
+        return min(proportional, Config.NER_MAX_TOKENS)
+
     def extract(self, text: str, ontology: Dict[str, Any]) -> Dict[str, Any]:
         """
         Extract entities and relations from text, guided by ontology.
@@ -78,12 +91,13 @@ class NERExtractor:
         ]
 
         last_error = None
+        budget = self._token_budget(text.strip())
         for attempt in range(self.max_retries + 1):
             try:
                 result = self.llm.chat_json(
                     messages=messages,
                     temperature=0.1,  # Low temp for extraction precision
-                    max_tokens=4096,
+                    max_tokens=budget,
                 )
                 return self._validate_and_clean(result, ontology)
 
