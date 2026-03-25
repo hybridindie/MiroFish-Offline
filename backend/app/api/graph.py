@@ -275,7 +275,8 @@ def build_graph():
             "graph_name": "Graph name",    // Optional
             "chunk_size": 500,          // Optional, default 500
             "chunk_overlap": 50,         // Optional, default 50
-            "batch_size": 3              // Optional, default from config
+            "batch_size": 3,             // Optional, default from config
+            "max_workers": 2             // Optional, parallel chunk threads, default from config
         }
 
     Response:
@@ -344,6 +345,12 @@ def build_graph():
             batch_size = max(1, int(batch_size))
         except (TypeError, ValueError):
             batch_size = Config.DEFAULT_GRAPH_BATCH_SIZE
+
+        max_workers = data.get('max_workers', Config.GRAPH_BUILD_WORKERS)
+        try:
+            max_workers = max(1, min(int(max_workers), Config.GRAPH_BUILD_WORKERS_MAX))
+        except (TypeError, ValueError):
+            max_workers = Config.GRAPH_BUILD_WORKERS
 
         # Update project configuration
         project.chunk_size = chunk_size
@@ -445,6 +452,7 @@ def build_graph():
                     graph_id,
                     chunks,
                     batch_size=batch_size,
+                    max_workers=max_workers,
                     progress_callback=add_progress_callback
                 )
 
@@ -483,7 +491,8 @@ def build_graph():
                         "node_count": node_count,
                         "edge_count": edge_count,
                         "chunk_count": total_chunks,
-                        "batch_size": batch_size
+                        "batch_size": batch_size,
+                        "max_workers": max_workers
                     }
                 )
 
