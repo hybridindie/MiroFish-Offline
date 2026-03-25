@@ -1,0 +1,7 @@
+market,platform,conversion_to_paid_pct,avg_revenue_per_paying_user_usd,membership_join_rate_pct,upsell_rate_pct,churn_30d_pct,churn_60d_pct,churn_90d_pct,notes
+US,X,1.0,3.50,0.8,12.0,30,45,55,X Subscriptions at $3-5/month; low baseline conversion but large top-funnel; upsell via exclusive lore and prompt drops
+US,Reddit,0.4,0.80,0.3,8.0,45,60,70,Reddit native monetization nascent; community trust drives funnel to off-platform premium endpoint
+US,Premium Community,3.2,9.50,2.5,18.0,20,32,42,Discord/Patreon-style endpoint; highest ARPU tier; community-discovered subscribers show lowest churn
+UK,X,0.8,3.20,0.7,11.0,32,47,57,UK X mDAU ~22M; lower absolute conversion ceiling vs US but comparable funnel shape
+UK,Reddit,0.3,0.70,0.2,7.0,47,62,72,Smaller UK Reddit base; niche subreddit engagement high but absolute numbers modest
+UK,Premium Community,2.8,8.50,2.1,16.0,22,35,45,Similar funnel shape to US; slightly lower ARPU driven by GBP-denominated pledge tiers

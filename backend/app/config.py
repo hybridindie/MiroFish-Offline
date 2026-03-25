@@ -31,6 +31,10 @@ class Config:
     LLM_API_KEY = os.environ.get('LLM_API_KEY')
     LLM_BASE_URL = os.environ.get('LLM_BASE_URL', 'http://localhost:11434/v1')
     LLM_MODEL_NAME = os.environ.get('LLM_MODEL_NAME', 'qwen2.5:32b')
+    # Streaming mode for chat completions. Supported values:
+    # - auto: stream for Ollama and detected reasoning models
+    # - true/false: force enable or disable streaming globally
+    LLM_STREAM_RESPONSES = os.environ.get('LLM_STREAM_RESPONSES', 'auto').strip().lower()
 
     # Neo4j configuration
     NEO4J_URI = os.environ.get('NEO4J_URI', 'bolt://localhost:7687')
@@ -80,14 +84,77 @@ class Config:
     except (ValueError, AttributeError):
         NER_MAX_TOKENS = 1024
 
+    # Extra token allowance added on top of the proportional JSON budget to
+    # cover the <think> reasoning block emitted by reasoning models (e.g.
+    # qwen3, deepseek-r1, qwq).  These tokens count against max_tokens but
+    # are stripped before JSON parsing, so without this headroom the model
+    # exhausts its budget on thinking and returns an empty JSON response.
+    # Set to 0 for non-reasoning models.  Default 1024 covers typical NER
+    # reasoning traces without significantly increasing latency.
+    _ner_think_overhead_str = os.environ.get('NER_THINK_OVERHEAD', '1024')
+    try:
+        NER_THINK_OVERHEAD = max(0, int(_ner_think_overhead_str.strip()))
+    except (ValueError, AttributeError):
+        NER_THINK_OVERHEAD = 1024
+
     # When True, relation (edge) embeddings are stored as empty vectors during
     # the graph build and can be computed later via embed_pending_relations().
     # Set to False (default) for full embeddings on every chunk.
     DEFER_RELATION_EMBEDDINGS = os.environ.get('DEFER_RELATION_EMBEDDINGS', 'false').strip().lower() == 'true'
 
+    # Post-build graph enrichment via LLM researcher.
+    GRAPH_RESEARCHER_ENABLED = os.environ.get('GRAPH_RESEARCHER_ENABLED', 'true').strip().lower() == 'true'
+    _graph_researcher_max_relations_str = os.environ.get('GRAPH_RESEARCHER_MAX_RELATIONS', '30')
+    try:
+        GRAPH_RESEARCHER_MAX_RELATIONS = max(1, int(_graph_researcher_max_relations_str.strip()))
+    except (ValueError, AttributeError):
+        GRAPH_RESEARCHER_MAX_RELATIONS = 30
+
+    _graph_researcher_max_entities_str = os.environ.get('GRAPH_RESEARCHER_MAX_ENTITIES', '120')
+    try:
+        GRAPH_RESEARCHER_MAX_ENTITIES = max(20, int(_graph_researcher_max_entities_str.strip()))
+    except (ValueError, AttributeError):
+        GRAPH_RESEARCHER_MAX_ENTITIES = 120
+
+    _graph_researcher_min_confidence_str = os.environ.get('GRAPH_RESEARCHER_MIN_CONFIDENCE', '0.55')
+    try:
+        GRAPH_RESEARCHER_MIN_CONFIDENCE = min(1.0, max(0.0, float(_graph_researcher_min_confidence_str.strip())))
+    except (ValueError, AttributeError):
+        GRAPH_RESEARCHER_MIN_CONFIDENCE = 0.55
+
     # OASIS simulation configuration
     OASIS_DEFAULT_MAX_ROUNDS = int(os.environ.get('OASIS_DEFAULT_MAX_ROUNDS', '10'))
     OASIS_SIMULATION_DATA_DIR = os.path.join(os.path.dirname(__file__), '../uploads/simulations')
+
+    # OASIS profile generation performance knobs
+    OASIS_PROFILE_DETAIL_LEVEL = os.environ.get('OASIS_PROFILE_DETAIL_LEVEL', 'balanced').strip().lower()
+    _oasis_persona_word_target_str = os.environ.get('OASIS_PERSONA_WORD_TARGET', '600')
+    try:
+        OASIS_PERSONA_WORD_TARGET = max(150, int(_oasis_persona_word_target_str.strip()))
+    except (ValueError, AttributeError):
+        OASIS_PERSONA_WORD_TARGET = 600
+
+    OASIS_PROFILE_ENABLE_GRAPH_SEARCH = os.environ.get('OASIS_PROFILE_ENABLE_GRAPH_SEARCH', 'false').strip().lower() == 'true'
+
+    _oasis_realtime_save_every_n_str = os.environ.get('OASIS_REALTIME_SAVE_EVERY_N', '10')
+    try:
+        OASIS_REALTIME_SAVE_EVERY_N = max(1, int(_oasis_realtime_save_every_n_str.strip()))
+    except (ValueError, AttributeError):
+        OASIS_REALTIME_SAVE_EVERY_N = 10
+
+    _oasis_realtime_save_interval_s_str = os.environ.get('OASIS_REALTIME_SAVE_INTERVAL_SECONDS', '2')
+    try:
+        OASIS_REALTIME_SAVE_INTERVAL_SECONDS = max(1, int(_oasis_realtime_save_interval_s_str.strip()))
+    except (ValueError, AttributeError):
+        OASIS_REALTIME_SAVE_INTERVAL_SECONDS = 2
+
+    # Simulation config generation performance knobs
+    SIM_CONFIG_MODE = os.environ.get('SIM_CONFIG_MODE', 'balanced').strip().lower()
+    _sim_config_agents_per_batch_str = os.environ.get('SIM_CONFIG_AGENTS_PER_BATCH', '20')
+    try:
+        SIM_CONFIG_AGENTS_PER_BATCH = min(60, max(5, int(_sim_config_agents_per_batch_str.strip())))
+    except (ValueError, AttributeError):
+        SIM_CONFIG_AGENTS_PER_BATCH = 20
 
     # OASIS platform available actions configuration
     OASIS_TWITTER_ACTIONS = [

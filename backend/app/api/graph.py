@@ -12,6 +12,7 @@ from . import graph_bp
 from ..config import Config
 from ..services.ontology_generator import OntologyGenerator
 from ..services.graph_builder import GraphBuilderService
+from ..services.graph_researcher import GraphResearcherService
 from ..services.text_processor import TextProcessor
 from ..utils.file_parser import FileParser
 from ..utils.logger import get_logger
@@ -352,6 +353,16 @@ def build_graph():
         except (TypeError, ValueError):
             max_workers = Config.GRAPH_BUILD_WORKERS
 
+        enable_researcher = data.get('enable_researcher', Config.GRAPH_RESEARCHER_ENABLED)
+        if isinstance(enable_researcher, str):
+            enable_researcher = enable_researcher.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+        researcher_max_relations = data.get('researcher_max_relations', Config.GRAPH_RESEARCHER_MAX_RELATIONS)
+        try:
+            researcher_max_relations = max(1, int(researcher_max_relations))
+        except (TypeError, ValueError):
+            researcher_max_relations = Config.GRAPH_RESEARCHER_MAX_RELATIONS
+
         # Update project configuration
         project.chunk_size = chunk_size
         project.chunk_overlap = chunk_overlap
@@ -456,6 +467,28 @@ def build_graph():
                     progress_callback=add_progress_callback
                 )
 
+                research_stats = {
+                    'candidates': 0,
+                    'accepted': 0,
+                    'persisted': 0,
+                }
+
+                if enable_researcher:
+                    task_manager.update_task(
+                        task_id,
+                        message="Running graph researcher enrichment...",
+                        progress=92
+                    )
+                    try:
+                        researcher = GraphResearcherService(storage=storage)
+                        research_stats = researcher.enrich_graph(
+                            graph_id=graph_id,
+                            ontology=ontology,
+                            max_relations=researcher_max_relations,
+                        )
+                    except Exception as e:
+                        build_logger.warning(f"[{task_id}] Graph researcher skipped: {e}")
+
                 # Neo4j processing is synchronous, no need to wait
                 task_manager.update_task(
                     task_id,
@@ -490,6 +523,9 @@ def build_graph():
                         "graph_id": graph_id,
                         "node_count": node_count,
                         "edge_count": edge_count,
+                        "research_relations_added": research_stats.get('persisted', 0),
+                        "research_candidates": research_stats.get('candidates', 0),
+                        "research_accepted": research_stats.get('accepted', 0),
                         "chunk_count": total_chunks,
                         "batch_size": batch_size,
                         "max_workers": max_workers

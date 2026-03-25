@@ -59,9 +59,16 @@ class NERExtractor:
         floor of 256 always applies regardless of NER_MAX_TOKENS; setting
         NER_MAX_TOKENS does not restore the old fixed-4096 behaviour for short
         chunks — it only raises the ceiling for longer ones.
+
+        ``Config.NER_THINK_OVERHEAD`` is added on top of the JSON budget to
+        reserve space for the ``<think>`` reasoning block emitted by reasoning
+        models (e.g. qwen3).  Those tokens count against ``max_tokens`` but
+        are stripped before JSON parsing; without this headroom the model can
+        exhaust its budget on thinking and return an empty response.  Set
+        ``NER_THINK_OVERHEAD=0`` for non-reasoning models.
         """
-        proportional = max(256, len(text) // 2)
-        return min(proportional, Config.NER_MAX_TOKENS)
+        json_budget = min(max(256, len(text) // 2), Config.NER_MAX_TOKENS)
+        return json_budget + Config.NER_THINK_OVERHEAD
 
     def extract(self, text: str, ontology: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -98,6 +105,7 @@ class NERExtractor:
                     messages=messages,
                     temperature=0.1,  # Low temp for extraction precision
                     max_tokens=budget,
+                    expected_keys=["entities", "relations"],
                 )
                 return self._validate_and_clean(result, ontology)
 

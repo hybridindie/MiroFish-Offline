@@ -468,6 +468,92 @@ class Neo4jStorage(GraphStorage):
         logger.info("[embed_pending_relations] Updated %d relations", updated_count)
         return updated_count
 
+    def add_researched_relations(
+        self,
+        graph_id: str,
+        relations: List[Dict[str, Any]],
+    ) -> int:
+        """Persist researcher-generated relations using entity names as anchors."""
+        if not relations:
+            return 0
+
+        fact_texts = [str(item.get('fact', '')).strip() for item in relations]
+        embeddings: List[List[float]] = []
+
+        if any(fact_texts) and not Config.DEFER_RELATION_EMBEDDINGS:
+            try:
+                embeddings = self._embedding.embed_batch(fact_texts)
+            except Exception as e:
+                logger.warning("[researcher] Relation embedding failed, storing empty vectors: %s", e)
+                embeddings = [[] for _ in relations]
+        else:
+            embeddings = [[] for _ in relations]
+
+        rows: List[Dict[str, Any]] = []
+        for idx, relation in enumerate(relations):
+            source = str(relation.get('source', '')).strip()
+            target = str(relation.get('target', '')).strip()
+            rel_type = str(relation.get('type', '')).strip()
+            fact = str(relation.get('fact', '')).strip()
+            confidence = relation.get('confidence')
+
+            if not source or not target or not rel_type or not fact:
+                continue
+
+            try:
+                confidence_value = float(confidence) if confidence is not None else None
+            except (TypeError, ValueError):
+                confidence_value = None
+
+            rows.append({
+                'source_lower': source.lower(),
+                'target_lower': target.lower(),
+                'name': rel_type,
+                'fact': fact,
+                'uuid': str(uuid.uuid4()),
+                'fact_embedding': embeddings[idx] if idx < len(embeddings) else [],
+                'attributes_json': json.dumps({
+                    'origin': 'researcher',
+                    'confidence': confidence_value,
+                }, ensure_ascii=False),
+            })
+
+        if not rows:
+            return 0
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        def _write(tx):
+            result = tx.run(
+                """
+                UNWIND $rows AS row
+                MATCH (src:Entity {graph_id: $gid, name_lower: row.source_lower})
+                MATCH (tgt:Entity {graph_id: $gid, name_lower: row.target_lower})
+                MERGE (src)-[r:RELATION {graph_id: $gid, name: row.name, fact: row.fact}]->(tgt)
+                ON CREATE SET
+                    r.uuid = row.uuid,
+                    r.fact_embedding = row.fact_embedding,
+                    r.attributes_json = row.attributes_json,
+                    r.episode_ids = [],
+                    r.created_at = $now,
+                    r.valid_at = null,
+                    r.invalid_at = null,
+                    r.expired_at = null
+                RETURN count(r) AS total
+                """,
+                gid=graph_id,
+                rows=rows,
+                now=now,
+            )
+            record = result.single()
+            return int(record['total']) if record and record['total'] is not None else 0
+
+        with self._driver.session() as session:
+            total = self._call_with_retry(session.execute_write, _write)
+
+        logger.info("[researcher] Persisted %d researched relations for graph %s", total, graph_id)
+        return total
+
     def wait_for_processing(
         self,
         episode_ids: List[str],

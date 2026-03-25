@@ -9,6 +9,7 @@ Optimization improvements:
 """
 
 import json
+import os
 import random
 import time
 from typing import Dict, Any, List, Optional
@@ -23,6 +24,21 @@ from .entity_reader import EntityNode
 from ..storage import GraphStorage
 
 logger = get_logger('mirofish.oasis_profile')
+
+DEFAULT_PROFILE_DETAIL_LEVEL = os.environ.get('OASIS_PROFILE_DETAIL_LEVEL', 'balanced').strip().lower()
+try:
+    DEFAULT_PERSONA_WORD_TARGET = max(150, int(os.environ.get('OASIS_PERSONA_WORD_TARGET', '600').strip()))
+except (ValueError, AttributeError):
+    DEFAULT_PERSONA_WORD_TARGET = 600
+DEFAULT_ENABLE_GRAPH_SEARCH = os.environ.get('OASIS_PROFILE_ENABLE_GRAPH_SEARCH', 'false').strip().lower() == 'true'
+try:
+    DEFAULT_REALTIME_SAVE_EVERY_N = max(1, int(os.environ.get('OASIS_REALTIME_SAVE_EVERY_N', '10').strip()))
+except (ValueError, AttributeError):
+    DEFAULT_REALTIME_SAVE_EVERY_N = 10
+try:
+    DEFAULT_REALTIME_SAVE_INTERVAL_SECONDS = max(1, int(os.environ.get('OASIS_REALTIME_SAVE_INTERVAL_SECONDS', '2').strip()))
+except (ValueError, AttributeError):
+    DEFAULT_REALTIME_SAVE_INTERVAL_SECONDS = 2
 
 
 @dataclass
@@ -183,7 +199,9 @@ class OasisProfileGenerator:
         base_url: Optional[str] = None,
         model_name: Optional[str] = None,
         storage: Optional[GraphStorage] = None,
-        graph_id: Optional[str] = None
+        graph_id: Optional[str] = None,
+        enable_graph_search: bool = DEFAULT_ENABLE_GRAPH_SEARCH,
+        profile_detail_level: str = DEFAULT_PROFILE_DETAIL_LEVEL,
     ):
         self.api_key = api_key or Config.LLM_API_KEY
         self.base_url = base_url or Config.LLM_BASE_URL
@@ -200,6 +218,18 @@ class OasisProfileGenerator:
         # GraphStorage for hybrid search enrichment
         self.storage = storage
         self.graph_id = graph_id
+        self.enable_graph_search = enable_graph_search
+        self.profile_detail_level = profile_detail_level
+        self._graph_search_cache: Dict[str, Dict[str, Any]] = {}
+
+    def _persona_word_target(self) -> int:
+        """Get persona target length based on profile detail level."""
+        level = (self.profile_detail_level or 'balanced').lower()
+        if level == 'fast':
+            return min(DEFAULT_PERSONA_WORD_TARGET, 350)
+        if level == 'detailed':
+            return max(DEFAULT_PERSONA_WORD_TARGET, 1200)
+        return DEFAULT_PERSONA_WORD_TARGET
     
     def generate_profile_from_entity(
         self,
@@ -287,10 +317,17 @@ class OasisProfileGenerator:
         Returns:
             Dictionary containing facts, node_summaries, context
         """
+        if not self.enable_graph_search:
+            return {"facts": [], "node_summaries": [], "context": ""}
+
         if not self.storage:
             return {"facts": [], "node_summaries": [], "context": ""}
 
         entity_name = entity.name
+
+        cache_key = f"{entity_name.lower()}::{entity.get_entity_type() or ''}"
+        if cache_key in self._graph_search_cache:
+            return self._graph_search_cache[cache_key]
 
         results = {
             "facts": [],
@@ -353,6 +390,7 @@ class OasisProfileGenerator:
         except Exception as e:
             logger.warning(f"Knowledge graph search failed ({entity_name}): {e}")
 
+        self._graph_search_cache[cache_key] = results
         return results
     
     def _build_entity_context(self, entity: EntityNode) -> str:
@@ -644,7 +682,7 @@ Context Information:
 Please generate JSON containing the following fields:
 
 1. bio: Social media bio, 200 characters
-2. persona: Detailed persona description (2000 words of pure text), must include:
+2. persona: Detailed persona description ({self._persona_word_target()} words of pure text), must include:
    - Basic information (age, profession, educational background, location)
    - Personal background (important experiences, event associations, social relationships)
    - Personality traits (MBTI type, core personality, emotional expression)
@@ -693,7 +731,7 @@ Context Information:
 Please generate JSON containing the following fields:
 
 1. bio: Official account bio, 200 characters, professional and appropriate
-2. persona: Detailed account profile description (2000 words of pure text), must include:
+2. persona: Detailed account profile description ({self._persona_word_target()} words of pure text), must include:
    - Basic institutional information (official name, organizational nature, founding background, main functions)
    - Account positioning (account type, target audience, core functions)
    - Speaking style (language characteristics, common expressions, taboo topics)
@@ -800,7 +838,11 @@ Important:
         graph_id: Optional[str] = None,
         parallel_count: int = 5,
         realtime_output_path: Optional[str] = None,
-        output_platform: str = "reddit"
+        output_platform: str = "reddit",
+        enable_graph_search: Optional[bool] = None,
+        profile_detail_level: Optional[str] = None,
+        realtime_save_every_n: int = DEFAULT_REALTIME_SAVE_EVERY_N,
+        realtime_save_interval_seconds: int = DEFAULT_REALTIME_SAVE_INTERVAL_SECONDS,
     ) -> List[OasisAgentProfile]:
         """
         Generate Agent Profiles in batch from entities (supports parallel generation)
@@ -823,6 +865,13 @@ Important:
         # Set graph_id for knowledge graph search
         if graph_id:
             self.graph_id = graph_id
+        if enable_graph_search is not None:
+            self.enable_graph_search = enable_graph_search
+        if profile_detail_level:
+            self.profile_detail_level = profile_detail_level
+
+        # Clear cache for each generation batch to avoid stale context reuse across runs.
+        self._graph_search_cache.clear()
 
         total = len(entities)
         profiles = [None] * total  # Pre-allocate list to maintain order
@@ -830,7 +879,10 @@ Important:
         lock = Lock()
 
         # Helper function for real-time file writing
-        def save_profiles_realtime():
+        last_saved_count = [0]
+        last_saved_at = [0.0]
+
+        def save_profiles_realtime(force: bool = False):
             """Real-time save generated profiles to file"""
             if not realtime_output_path:
                 return
@@ -839,6 +891,14 @@ Important:
                 # Filter generated profiles
                 existing_profiles = [p for p in profiles if p is not None]
                 if not existing_profiles:
+                    return
+
+                now = time.time()
+                unsaved = len(existing_profiles) - last_saved_count[0]
+                interval_elapsed = (now - last_saved_at[0]) >= max(1, realtime_save_interval_seconds)
+                threshold_reached = unsaved >= max(1, realtime_save_every_n)
+
+                if not force and not threshold_reached and not interval_elapsed:
                     return
 
                 try:
@@ -857,6 +917,8 @@ Important:
                                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                                 writer.writeheader()
                                 writer.writerows(profiles_data)
+                    last_saved_count[0] = len(existing_profiles)
+                    last_saved_at[0] = now
                 except Exception as e:
                     logger.warning(f"Real-time profile save failed: {e}")
         
@@ -917,7 +979,7 @@ Important:
                         current = completed_count[0]
 
                     # Real-time file writing
-                    save_profiles_realtime()
+                    save_profiles_realtime(force=False)
 
                     if progress_callback:
                         progress_callback(
@@ -945,11 +1007,14 @@ Important:
                         source_entity_type=entity_type,
                     )
                     # Real-time file writing (even for fallback personas)
-                    save_profiles_realtime()
+                    save_profiles_realtime(force=False)
 
         print(f"\n{'='*60}")
         print(f"Persona generation complete! Generated {len([p for p in profiles if p])} agents")
         print(f"{'='*60}\n")
+
+        # Final checkpoint to guarantee persisted output includes all generated profiles.
+        save_profiles_realtime(force=True)
         
         return profiles
     
