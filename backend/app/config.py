@@ -71,6 +71,20 @@ class Config:
     except (ValueError, AttributeError):
         GRAPH_BUILD_WORKERS_MAX = 8
 
+    # Maximum tokens the NER/RE LLM call may produce per chunk.  A lower value
+    # reduces latency and reduces context use when chunks are small.  The
+    # extractor will scale this down proportionally for short chunks.
+    _ner_max_tokens_str = os.environ.get('NER_MAX_TOKENS', '1024')
+    try:
+        NER_MAX_TOKENS = max(256, int(_ner_max_tokens_str.strip()))
+    except (ValueError, AttributeError):
+        NER_MAX_TOKENS = 1024
+
+    # When True, relation (edge) embeddings are stored as empty vectors during
+    # the graph build and can be computed later via embed_pending_relations().
+    # Set to False (default) for full embeddings on every chunk.
+    DEFER_RELATION_EMBEDDINGS = os.environ.get('DEFER_RELATION_EMBEDDINGS', 'false').strip().lower() == 'true'
+
     # OASIS simulation configuration
     OASIS_DEFAULT_MAX_ROUNDS = int(os.environ.get('OASIS_DEFAULT_MAX_ROUNDS', '10'))
     OASIS_SIMULATION_DATA_DIR = os.path.join(os.path.dirname(__file__), '../uploads/simulations')
