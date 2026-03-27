@@ -14,6 +14,9 @@ from ..services.ontology_generator import OntologyGenerator
 from ..services.graph_builder import GraphBuilderService
 from ..services.graph_researcher import GraphResearcherService
 from ..services.text_processor import TextProcessor
+from ..services.simulation_manager import SimulationManager
+from ..services.simulation_runner import SimulationRunner
+from ..services.report_agent import ReportManager
 from ..utils.file_parser import FileParser
 from ..utils.logger import get_logger
 from ..models.task import TaskManager, TaskStatus
@@ -80,18 +83,92 @@ def delete_project(project_id: str):
     """
     Delete project
     """
-    success = ProjectManager.delete_project(project_id)
+    try:
+        project = ProjectManager.get_project(project_id)
+        if not project:
+            return jsonify({
+                "success": False,
+                "error": f"Project does not exist or deletion failed: {project_id}"
+            }), 404
 
-    if not success:
+        manager = SimulationManager()
+        simulations = manager.list_simulations(project_id=project_id)
+
+        # Safety check: block deletion while simulation is actively running.
+        active_statuses = {"starting", "running", "stopping"}
+        active_simulations = []
+        for sim in simulations:
+            run_state = SimulationRunner.get_run_state(sim.simulation_id)
+            if run_state and run_state.runner_status.value in active_statuses:
+                active_simulations.append(sim.simulation_id)
+
+        if active_simulations:
+            return jsonify({
+                "success": False,
+                "error": (
+                    "Cannot delete project while simulations are running. "
+                    f"Stop these simulations first: {', '.join(active_simulations)}"
+                )
+            }), 409
+
+        deleted_reports = 0
+        for sim in simulations:
+            # Delete all reports in batches to avoid orphaned data.
+            while True:
+                reports = ReportManager.list_reports(simulation_id=sim.simulation_id, limit=200)
+                if not reports:
+                    break
+
+                deleted_in_batch = 0
+                for report in reports:
+                    if ReportManager.delete_report(report.report_id):
+                        deleted_reports += 1
+                        deleted_in_batch += 1
+
+                # Guard against infinite loops if deletion repeatedly fails.
+                if deleted_in_batch == 0:
+                    break
+
+            SimulationRunner.cleanup_simulation_runtime(sim.simulation_id)
+
+        deleted_simulations = manager.delete_simulations_by_project(project_id)
+
+        deleted_graph = False
+        if project.graph_id:
+            storage = current_app.extensions.get('neo4j_storage')
+            if not storage:
+                return jsonify({
+                    "success": False,
+                    "error": "GraphStorage not initialized — check Neo4j connection"
+                }), 500
+            storage.delete_graph(project.graph_id)
+            deleted_graph = True
+
+        success = ProjectManager.delete_project(project_id)
+
+        if not success:
+            return jsonify({
+                "success": False,
+                "error": f"Project does not exist or deletion failed: {project_id}"
+            }), 404
+
+        return jsonify({
+            "success": True,
+            "message": f"Project deleted: {project_id}",
+            "data": {
+                "project_id": project_id,
+                "graph_deleted": deleted_graph,
+                "deleted_simulations": deleted_simulations,
+                "deleted_reports": deleted_reports
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"Failed to delete project {project_id}: {e}")
         return jsonify({
             "success": False,
-            "error": f"Project does not exist or deletion failed: {project_id}"
-        }), 404
-
-    return jsonify({
-        "success": True,
-        "message": f"Project deleted: {project_id}"
-    })
+            "error": str(e)
+        }), 500
 
 
 @graph_bp.route('/project/<project_id>/reset', methods=['POST'])
