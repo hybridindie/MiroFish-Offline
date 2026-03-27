@@ -7,6 +7,7 @@ import os
 import traceback
 import threading
 from flask import request, jsonify, current_app
+from werkzeug.utils import secure_filename
 
 from . import graph_bp
 from ..config import Config
@@ -81,90 +82,41 @@ def list_projects():
 @graph_bp.route('/project/<project_id>', methods=['DELETE'])
 def delete_project(project_id: str):
     """
-    Delete project
+    Delete project and all associated data (reports, simulations, graph).
     """
     try:
-        project = ProjectManager.get_project(project_id)
-        if not project:
+        from ..services.project_deletion_service import ProjectDeletionService
+        
+        deletion_service = ProjectDeletionService()
+        result = deletion_service.delete_project(project_id)
+
+        if not result.success:
+            # Return 404 if project not found, 409 if active simulations, 500 for other errors.
+            if "does not exist" in (result.error or ""):
+                status_code = 404
+            elif "running" in (result.error or "").lower():
+                status_code = 409
+            else:
+                status_code = 500
+
             return jsonify({
                 "success": False,
-                "error": f"Project does not exist or deletion failed: {project_id}"
-            }), 404
-
-        manager = SimulationManager()
-        simulations = manager.list_simulations(project_id=project_id)
-
-        # Safety check: block deletion while simulation is actively running.
-        active_statuses = {"starting", "running", "stopping"}
-        active_simulations = []
-        for sim in simulations:
-            run_state = SimulationRunner.get_run_state(sim.simulation_id)
-            if run_state and run_state.runner_status.value in active_statuses:
-                active_simulations.append(sim.simulation_id)
-
-        if active_simulations:
-            return jsonify({
-                "success": False,
-                "error": (
-                    "Cannot delete project while simulations are running. "
-                    f"Stop these simulations first: {', '.join(active_simulations)}"
-                )
-            }), 409
-
-        deleted_reports = 0
-        for sim in simulations:
-            # Delete all reports in batches to avoid orphaned data.
-            while True:
-                reports = ReportManager.list_reports(simulation_id=sim.simulation_id, limit=200)
-                if not reports:
-                    break
-
-                deleted_in_batch = 0
-                for report in reports:
-                    if ReportManager.delete_report(report.report_id):
-                        deleted_reports += 1
-                        deleted_in_batch += 1
-
-                # Guard against infinite loops if deletion repeatedly fails.
-                if deleted_in_batch == 0:
-                    break
-
-            SimulationRunner.cleanup_simulation_runtime(sim.simulation_id)
-
-        deleted_simulations = manager.delete_simulations_by_project(project_id)
-
-        deleted_graph = False
-        if project.graph_id:
-            storage = current_app.extensions.get('neo4j_storage')
-            if not storage:
-                return jsonify({
-                    "success": False,
-                    "error": "GraphStorage not initialized — check Neo4j connection"
-                }), 500
-            storage.delete_graph(project.graph_id)
-            deleted_graph = True
-
-        success = ProjectManager.delete_project(project_id)
-
-        if not success:
-            return jsonify({
-                "success": False,
-                "error": f"Project does not exist or deletion failed: {project_id}"
-            }), 404
+                "error": result.error
+            }), status_code
 
         return jsonify({
             "success": True,
             "message": f"Project deleted: {project_id}",
             "data": {
-                "project_id": project_id,
-                "graph_deleted": deleted_graph,
-                "deleted_simulations": deleted_simulations,
-                "deleted_reports": deleted_reports
+                "project_id": result.project_id,
+                "graph_deleted": result.graph_deleted,
+                "deleted_simulations": result.deleted_simulations,
+                "deleted_reports": result.deleted_reports
             }
         })
 
     except Exception as e:
-        logger.error(f"Failed to delete project {project_id}: {e}")
+        logger.exception(f"Failed to delete project {project_id}: {e}")
         return jsonify({
             "success": False,
             "error": str(e)
@@ -267,12 +219,16 @@ def generate_ontology():
         all_text = ""
 
         for file in uploaded_files:
-            if file and file.filename and allowed_file(file.filename):
+            if not file or not file.filename:
+                continue
+
+            sanitized_filename = secure_filename(file.filename)
+            if sanitized_filename and allowed_file(sanitized_filename):
                 # Save file to project directory
                 file_info = ProjectManager.save_file_to_project(
                     project.project_id,
                     file,
-                    file.filename
+                    sanitized_filename
                 )
                 project.files.append({
                     "filename": file_info["original_filename"],
@@ -333,10 +289,10 @@ def generate_ontology():
         })
         
     except Exception as e:
+        logger.exception(f"Ontology generation failed: {e}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": str(e)
         }), 500
 
 
@@ -611,7 +567,7 @@ def build_graph():
 
             except Exception as e:
                 # Update project status to failed
-                build_logger.error(f"[{task_id}] Graph build failed: {str(e)}")
+                build_logger.exception(f"[{task_id}] Graph build failed: {str(e)}")
                 build_logger.debug(traceback.format_exc())
 
                 project.status = ProjectStatus.FAILED
@@ -639,10 +595,10 @@ def build_graph():
         })
         
     except Exception as e:
+        logger.exception(f"Graph build request failed: {e}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": str(e)
         }), 500
 
 
@@ -699,10 +655,10 @@ def get_graph_data(graph_id: str):
         })
 
     except Exception as e:
+        logger.exception(f"Failed to get graph data for {graph_id}: {e}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": str(e)
         }), 500
 
 
@@ -722,8 +678,8 @@ def delete_graph(graph_id: str):
         })
 
     except Exception as e:
+        logger.exception(f"Failed to delete graph {graph_id}: {e}")
         return jsonify({
             "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
+            "error": str(e)
         }), 500

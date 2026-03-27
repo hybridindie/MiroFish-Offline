@@ -1,6 +1,0 @@
-market,platform,teaser_to_paid_conversion_pct,avg_revenue_per_paying_user_usd,tip_rate_pct,bundle_uptake_pct,churn_30d_pct,churn_60d_pct,churn_90d_pct,revenue_concentration_pct,notes
-US,OnlyFans,3.5,22.50,18.0,12.0,22,35,47,68,Teaser via X; top 1% creators hold ~33% of total revenue; 20% platform cut; weekly payouts with 30-day reserve for new accounts
-US,Fanvue,2.8,18.00,14.0,10.0,20,32,44,55,AI-creator badge and explicit synthetic persona support in ToS; 15% platform cut; lower churn vs OF for AI-identified creators
-US,Other fallback endpoint,1.5,12.00,8.0,6.0,28,42,55,45,Fansly/SubscribeStar/Gumroad as contingency; lower ARPU but critical revenue diversification layer
-UK,OnlyFans,3.2,20.00,16.0,11.0,24,37,49,66,UK is OFs largest market by creator density; OFCOM OSA 2025 compliance adds friction but increases trust signal
-UK,Fanvue,2.6,16.50,13.0,9.0,21,33,45,52,UK-headquartered; GDPR and ICO compliant by default; AI creator support strongest of any UK platform

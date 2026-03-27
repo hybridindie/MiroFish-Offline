@@ -3,6 +3,7 @@ MiroFish Backend - Flask Application Factory
 """
 
 import os
+import json
 import warnings
 
 # Suppress multiprocessing resource_tracker warnings (from third-party libraries like transformers)
@@ -71,6 +72,34 @@ def create_app(config_class=Config):
     @app.after_request
     def log_response(response):
         logger = get_logger('mirofish.request')
+
+        # Never expose internal traceback details to API clients.
+        if response.is_json:
+            try:
+                def _sanitize_traceback(obj):
+                    """
+                    Recursively remove any 'traceback' fields from dicts/lists in the JSON payload.
+                    Logs the removed traceback content for internal diagnostics.
+                    """
+                    if isinstance(obj, dict):
+                        if 'traceback' in obj:
+                            traceback_text = obj.pop('traceback')
+                            if traceback_text:
+                                logger.error('Internal traceback removed from API response:\n%s', traceback_text)
+                        for key, value in list(obj.items()):
+                            obj[key] = _sanitize_traceback(value)
+                    elif isinstance(obj, list):
+                        for idx, item in enumerate(obj):
+                            obj[idx] = _sanitize_traceback(item)
+                    return obj
+
+                payload = response.get_json(silent=True)
+                if payload is not None:
+                    sanitized = _sanitize_traceback(payload)
+                    response.set_data(json.dumps(sanitized, ensure_ascii=False))
+            except Exception:
+                logger.exception('Failed to sanitize traceback field from API response')
+
         logger.debug(f"Response: {response.status_code}")
         return response
 
