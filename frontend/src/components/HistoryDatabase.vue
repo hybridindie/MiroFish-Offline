@@ -10,13 +10,6 @@
       <div class="gradient-overlay"></div>
     </div>
 
-    <!-- Title section -->
-    <div class="section-header">
-      <div class="section-line"></div>
-      <span class="section-title">Simulation Records</span>
-      <div class="section-line"></div>
-    </div>
-
     <!-- Card container (only shown when there are projects) -->
     <div v-if="projects.length > 0" class="cards-container" :class="{ expanded: isExpanded }" :style="containerStyle">
       <div 
@@ -27,7 +20,6 @@
         :style="getCardStyle(index)"
         @mouseenter="hoveringCard = index"
         @mouseleave="hoveringCard = null"
-        @click="navigateToProject(project)"
       >
         <!-- Card header: simulation_id and feature availability status -->
         <div class="card-header">
@@ -89,9 +81,36 @@
             <span class="card-date">{{ formatDate(project.created_at) }}</span>
             <span class="card-time">{{ formatTime(project.created_at) }}</span>
           </div>
-          <span class="card-progress" :class="getProgressClass(project)">
-            <span class="status-dot">●</span> {{ formatRounds(project) }}
-          </span>
+          <div class="card-footer-right">
+            <span class="card-progress" :class="getProgressClass(project)">
+              <span class="status-dot">●</span> {{ formatRounds(project) }}
+            </span>
+            <button class="card-action-btn load" @click.stop="loadFromCard(project)">
+              Load
+            </button>
+            <button
+              class="card-action-btn sim"
+              :disabled="!project.simulation_id"
+              @click.stop="openSimulationFromCard(project)"
+            >
+              Sim
+            </button>
+            <button
+              class="card-action-btn report"
+              :disabled="!project.report_id"
+              @click.stop="openReportFromCard(project)"
+            >
+              Report
+            </button>
+            <button
+              class="card-action-btn delete"
+              :disabled="!project.project_id || deletingProjectId === project.project_id"
+              @click.stop="deleteFromCard(project)"
+              title="Delete project and related history"
+            >
+              {{ deletingProjectId === project.project_id ? 'Deleting...' : 'Delete' }}
+            </button>
+          </div>
         </div>
 
         <!-- Bottom decoration line (expands on hover) -->
@@ -105,88 +124,13 @@
       <span class="loading-text">Loading...</span>
     </div>
 
-    <!-- Simulation playback details modal -->
-    <Teleport to="body">
-      <Transition name="modal">
-        <div v-if="selectedProject" class="modal-overlay" @click.self="closeModal">
-          <div class="modal-content">
-            <!-- Modal header -->
-            <div class="modal-header">
-              <div class="modal-title-section">
-                <span class="modal-id">{{ formatSimulationId(selectedProject.simulation_id) }}</span>
-                <span class="modal-progress" :class="getProgressClass(selectedProject)">
-                  <span class="status-dot">●</span> {{ formatRounds(selectedProject) }}
-                </span>
-                <span class="modal-create-time">{{ formatDate(selectedProject.created_at) }} {{ formatTime(selectedProject.created_at) }}</span>
-              </div>
-              <button class="modal-close" @click="closeModal">×</button>
-            </div>
-
-            <!-- Modal content -->
-            <div class="modal-body">
-              <!-- Simulation requirement -->
-              <div class="modal-section">
-                <div class="modal-label">Simulation Requirement</div>
-                <div class="modal-requirement">{{ selectedProject.simulation_requirement || 'None' }}</div>
-              </div>
-
-              <!-- File list -->
-              <div class="modal-section">
-                <div class="modal-label">Associated Files</div>
-                <div class="modal-files" v-if="selectedProject.files && selectedProject.files.length > 0">
-                  <div v-for="(file, index) in selectedProject.files" :key="index" class="modal-file-item">
-                    <span class="file-tag" :class="getFileType(file.filename)">{{ getFileTypeLabel(file.filename) }}</span>
-                    <span class="modal-file-name">{{ file.filename }}</span>
-                  </div>
-                </div>
-                <div class="modal-empty" v-else>No Associated Files</div>
-              </div>
-            </div>
-
-            <!-- Simulation playback divider -->
-            <div class="modal-divider">
-              <span class="divider-line"></span>
-              <span class="divider-text">Simulation Playback</span>
-              <span class="divider-line"></span>
-            </div>
-
-            <!-- Navigation buttons -->
-            <div class="modal-actions">
-              <button
-                class="modal-btn btn-project"
-                @click="goToProject"
-                :disabled="!selectedProject.project_id"
-              >
-                <span class="btn-step">Step1</span>
-                <span class="btn-icon">◇</span>
-                <span class="btn-text">Graph Construction</span>
-              </button>
-              <button
-                class="modal-btn btn-simulation"
-                @click="goToSimulation"
-              >
-                <span class="btn-step">Step2</span>
-                <span class="btn-icon">◈</span>
-                <span class="btn-text">Environment Setup</span>
-              </button>
-              <button
-                class="modal-btn btn-report"
-                @click="goToReport"
-                :disabled="!selectedProject.report_id"
-              >
-                <span class="btn-step">Step4</span>
-                <span class="btn-icon">◆</span>
-                <span class="btn-text">Analysis Report</span>
-              </button>
-            </div>
-            <!-- Playback unavailable notice -->
-            <div class="modal-playback-hint">
-              <span class="hint-text">Step3 "Start Simulation" and Step5 "Deep Interaction" must be launched during execution and do not support history playback</span>
-            </div>
-          </div>
-        </div>
-      </Transition>
-    </Teleport>
+    <!-- Empty state -->
+    <div v-else-if="projects.length === 0" class="empty-state">
+      <span class="empty-icon">◇</span>
+      <span class="empty-title">No history yet</span>
+      <span class="empty-subtitle">Run a simulation to populate history cards.</span>
+      <button class="empty-action-btn" @click="loadHistory">Refresh</button>
+    </div>
   </div>
 </template>
 
@@ -194,6 +138,7 @@
 import { ref, computed, onMounted, onUnmounted, onActivated, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { getSimulationHistory } from '../api/simulation'
+import { deleteProject } from '../api/projectManager'
 
 const router = useRouter()
 const route = useRoute()
@@ -204,7 +149,7 @@ const loading = ref(true)
 const isExpanded = ref(false)
 const hoveringCard = ref(null)
 const historyContainer = ref(null)
-const selectedProject = ref(null)  // Currently selected project (for modal)
+const deletingProjectId = ref(null)
 let observer = null
 let isAnimating = false  // Animation lock to prevent flickering
 let expandDebounceTimer = null  // Debounce timer
@@ -391,46 +336,57 @@ const truncateFilename = (filename, maxLength) => {
   return truncatedName + ext
 }
 
-// Open project details modal
-const navigateToProject = (simulation) => {
-  selectedProject.value = simulation
-}
-
-// Close modal
-const closeModal = () => {
-  selectedProject.value = null
-}
-
-// Navigate to Graph Construction page (Project)
-const goToProject = () => {
-  if (selectedProject.value?.project_id) {
+const loadFromCard = (simulation) => {
+  if (simulation?.project_id) {
     router.push({
       name: 'Process',
-      params: { projectId: selectedProject.value.project_id }
+      params: { projectId: simulation.project_id }
     })
-    closeModal()
+    return
   }
-}
 
-// Navigate to Environment Setup page (Simulation)
-const goToSimulation = () => {
-  if (selectedProject.value?.simulation_id) {
+  if (simulation?.simulation_id) {
     router.push({
       name: 'Simulation',
-      params: { simulationId: selectedProject.value.simulation_id }
+      params: { simulationId: simulation.simulation_id }
     })
-    closeModal()
   }
 }
 
-// Navigate to Analysis Report page (Report)
-const goToReport = () => {
-  if (selectedProject.value?.report_id) {
-    router.push({
-      name: 'Report',
-      params: { reportId: selectedProject.value.report_id }
-    })
-    closeModal()
+const openSimulationFromCard = (simulation) => {
+  if (!simulation?.simulation_id) return
+  router.push({
+    name: 'Simulation',
+    params: { simulationId: simulation.simulation_id }
+  })
+}
+
+const openReportFromCard = (simulation) => {
+  if (!simulation?.report_id) return
+  router.push({
+    name: 'Report',
+    params: { reportId: simulation.report_id }
+  })
+}
+
+const deleteFromCard = async (simulation) => {
+  if (!simulation?.project_id || deletingProjectId.value) return
+
+  const shouldDelete = window.confirm(
+    `Delete project ${simulation.project_id}? This removes graph and associated simulation history.`
+  )
+  if (!shouldDelete) return
+
+  try {
+    deletingProjectId.value = simulation.project_id
+    const response = await deleteProject(simulation.project_id)
+    if (response.success) {
+      projects.value = projects.value.filter(p => p.project_id !== simulation.project_id)
+    }
+  } catch (error) {
+    console.error('Failed to delete project from history:', error)
+  } finally {
+    deletingProjectId.value = null
   }
 }
 
@@ -623,34 +579,6 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
-/* Title section */
-.section-header {
-  position: relative;
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 24px;
-  margin-bottom: 24px;
-  font-family: 'JetBrains Mono', 'SF Mono', monospace;
-  padding: 0 40px;
-}
-
-.section-line {
-  flex: 1;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, #E5E7EB, transparent);
-  max-width: 300px;
-}
-
-.section-title {
-  font-size: 0.8rem;
-  font-weight: 500;
-  color: #9CA3AF;
-  letter-spacing: 3px;
-  text-transform: uppercase;
-}
-
 /* Card container */
 .cards-container {
   position: relative;
@@ -670,7 +598,7 @@ onUnmounted(() => {
   border: 1px solid #E5E7EB;
   border-radius: 0;
   padding: 14px;
-  cursor: pointer;
+  cursor: default;
   box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
   transition: box-shadow 0.3s ease, border-color 0.3s ease, transform 700ms cubic-bezier(0.23, 1, 0.32, 1), opacity 700ms cubic-bezier(0.23, 1, 0.32, 1);
 }
@@ -925,6 +853,12 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
+.card-footer-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* Date-time combination */
 .card-datetime {
   display: flex;
@@ -950,6 +884,62 @@ onUnmounted(() => {
 .card-footer .card-progress.completed { color: #10B981; }
 .card-footer .card-progress.in-progress { color: #F59E0B; }
 .card-footer .card-progress.not-started { color: #9CA3AF; }
+
+.card-action-btn {
+  border: 1px solid #E5E7EB;
+  background: #FFFFFF;
+  color: #374151;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.62rem;
+  line-height: 1;
+  padding: 6px 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.card-action-btn:hover:not(:disabled) {
+  border-color: #9CA3AF;
+  color: #111827;
+}
+
+.card-action-btn.load {
+  border-color: #D1D5DB;
+}
+
+.card-action-btn.sim {
+  border-color: #DBEAFE;
+  color: #1D4ED8;
+}
+
+.card-action-btn.sim:hover:not(:disabled) {
+  border-color: #93C5FD;
+  color: #1E40AF;
+}
+
+.card-action-btn.report {
+  border-color: #D1FAE5;
+  color: #065F46;
+}
+
+.card-action-btn.report:hover:not(:disabled) {
+  border-color: #6EE7B7;
+  color: #064E3B;
+}
+
+.card-action-btn.delete {
+  color: #991B1B;
+  border-color: #FECACA;
+}
+
+.card-action-btn.delete:hover:not(:disabled) {
+  border-color: #F87171;
+  color: #7F1D1D;
+}
+
+.card-action-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 
 /* Bottom decoration line */
 .card-bottom-line {
@@ -982,6 +972,34 @@ onUnmounted(() => {
   opacity: 0.5;
 }
 
+.empty-title {
+  font-family: 'JetBrains Mono', monospace;
+  color: #374151;
+  font-size: 0.9rem;
+  letter-spacing: 0.4px;
+}
+
+.empty-subtitle {
+  font-size: 0.82rem;
+  color: #9CA3AF;
+}
+
+.empty-action-btn {
+  border: 1px solid #D1D5DB;
+  background: #FFFFFF;
+  color: #374151;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.empty-action-btn:hover {
+  border-color: #9CA3AF;
+  color: #111827;
+}
+
 .loading-spinner {
   width: 24px;
   height: 24px;
@@ -1009,332 +1027,5 @@ onUnmounted(() => {
   .project-card {
     width: 200px;
   }
-}
-
-/* ===== Simulation Playback Details Modal Styles ===== */
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 9999;
-  backdrop-filter: blur(4px);
-}
-
-.modal-content {
-  background: #FFFFFF;
-  width: 560px;
-  max-width: 90vw;
-  max-height: 85vh;
-  overflow-y: auto;
-  border: 1px solid #E5E7EB;
-  border-radius: 8px;
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
-}
-
-/* Animation transition */
-.modal-enter-active,
-.modal-leave-active {
-  transition: opacity 0.3s ease;
-}
-
-.modal-enter-from,
-.modal-leave-to {
-  opacity: 0;
-}
-
-.modal-enter-active .modal-content {
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.modal-leave-active .modal-content {
-  transition: all 0.2s ease-in;
-}
-
-.modal-enter-from .modal-content {
-  transform: scale(0.95) translateY(10px);
-  opacity: 0;
-}
-
-.modal-leave-to .modal-content {
-  transform: scale(0.95) translateY(10px);
-  opacity: 0;
-}
-
-/* Modal header */
-.modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 20px 32px;
-  border-bottom: 1px solid #F3F4F6;
-  background: #FFFFFF;
-}
-
-.modal-title-section {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.modal-id {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 1rem;
-  font-weight: 600;
-  color: #111827;
-  letter-spacing: 0.5px;
-}
-
-.modal-progress {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 0.75rem;
-  font-weight: 600;
-  padding: 4px 8px;
-  border-radius: 4px;
-  background: #F9FAFB;
-}
-
-.modal-progress.completed { color: #10B981; background: rgba(16, 185, 129, 0.1); }
-.modal-progress.in-progress { color: #F59E0B; background: rgba(245, 158, 11, 0.1); }
-.modal-progress.not-started { color: #9CA3AF; background: #F3F4F6; }
-
-.modal-create-time {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 0.75rem;
-  color: #9CA3AF;
-  letter-spacing: 0.3px;
-}
-
-.modal-close {
-  width: 32px;
-  height: 32px;
-  border: none;
-  background: transparent;
-  font-size: 1.5rem;
-  color: #9CA3AF;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.2s ease;
-  border-radius: 6px;
-}
-
-.modal-close:hover {
-  background: #F3F4F6;
-  color: #111827;
-}
-
-/* Modal content */
-.modal-body {
-  padding: 24px 32px;
-}
-
-.modal-section {
-  margin-bottom: 24px;
-}
-
-.modal-section:last-child {
-  margin-bottom: 0;
-}
-
-.modal-label {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 0.75rem;
-  color: #6B7280;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  margin-bottom: 10px;
-  font-weight: 500;
-}
-
-.modal-requirement {
-  font-size: 0.95rem;
-  color: #374151;
-  line-height: 1.6;
-  padding: 16px;
-  background: #F9FAFB;
-  border: 1px solid #F3F4F6;
-  border-radius: 8px;
-}
-
-.modal-files {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  max-height: 200px;
-  overflow-y: auto;
-  padding-right: 4px;
-}
-
-/* Custom scrollbar style */
-.modal-files::-webkit-scrollbar {
-  width: 4px;
-}
-
-.modal-files::-webkit-scrollbar-track {
-  background: #F3F4F6;
-  border-radius: 2px;
-}
-
-.modal-files::-webkit-scrollbar-thumb {
-  background: #D1D5DB;
-  border-radius: 2px;
-}
-
-.modal-files::-webkit-scrollbar-thumb:hover {
-  background: #9CA3AF;
-}
-
-.modal-file-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  background: #FFFFFF;
-  border: 1px solid #E5E7EB;
-  border-radius: 6px;
-  transition: all 0.2s ease;
-}
-
-.modal-file-item:hover {
-  border-color: #D1D5DB;
-  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-}
-
-.modal-file-name {
-  font-size: 0.85rem;
-  color: #4B5563;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.modal-empty {
-  font-size: 0.85rem;
-  color: #9CA3AF;
-  padding: 16px;
-  background: #F9FAFB;
-  border: 1px dashed #E5E7EB;
-  border-radius: 6px;
-  text-align: center;
-}
-
-/* Simulation playback divider */
-.modal-divider {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 10px 32px 0;
-  background: #FFFFFF;
-}
-
-.divider-line {
-  flex: 1;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, #E5E7EB, transparent);
-}
-
-.divider-text {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 0.7rem;
-  color: #9CA3AF;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-/* Navigation buttons */
-.modal-actions {
-  display: flex;
-  gap: 16px;
-  padding: 20px 32px;
-  background: #FFFFFF;
-}
-
-.modal-btn {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 16px;
-  border: 1px solid #E5E7EB;
-  border-radius: 8px;
-  background: #FFFFFF;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  position: relative;
-  overflow: hidden;
-}
-
-.modal-btn:hover:not(:disabled) {
-  border-color: #000000;
-  transform: translateY(-2px);
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-}
-
-.modal-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  background: #F9FAFB;
-}
-
-.btn-step {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 0.6rem;
-  font-weight: 500;
-  color: #9CA3AF;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-}
-
-.btn-icon {
-  font-size: 1.4rem;
-  line-height: 1;
-  transition: color 0.2s ease;
-}
-
-.btn-text {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  color: #4B5563;
-}
-
-.modal-btn.btn-project .btn-icon { color: #3B82F6; }
-.modal-btn.btn-simulation .btn-icon { color: #F59E0B; }
-.modal-btn.btn-report .btn-icon { color: #10B981; }
-
-.modal-btn:hover:not(:disabled) .btn-text {
-  color: #111827;
-}
-
-/* Playback unavailable notice */
-.modal-playback-hint {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 32px 20px;
-  background: #FFFFFF;
-}
-
-.hint-text {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 0.7rem;
-  color: #9CA3AF;
-  letter-spacing: 0.3px;
-  text-align: center;
-  line-height: 1.5;
 }
 </style>
