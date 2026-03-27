@@ -370,7 +370,8 @@ const openReportFromCard = (simulation) => {
 }
 
 const deleteFromCard = async (simulation) => {
-  if (!simulation?.project_id || deletingProjectId.value) return
+  // Only prevent concurrent deletes of the same project; other projects can be deleted simultaneously
+  if (!simulation?.project_id || deletingProjectId.value === simulation.project_id) return
 
   const shouldDelete = window.confirm(
     `Delete project ${simulation.project_id}? This removes graph and associated simulation history.`
