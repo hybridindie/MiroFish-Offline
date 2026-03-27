@@ -1487,7 +1487,8 @@ def start_simulation():
             "platform": "parallel",                // Optional: twitter / reddit / parallel (Default)
             "max_rounds": 100,                     // Optional: Maximum simulation rounds, default unlimited
             "enable_graph_memory_update": false,   // Optional: Whether to enable knowledge graph memory updates for agents
-            "force": false                         // Optional: Force restart (stop running simulation and clean runtime files)
+            "force": false,                        // Optional: Force restart (stop running simulation and clean runtime files)
+            "archive_previous_run": false          // Optional: Archive previous run artifacts before restart
         }
 
     About force Parameters:
@@ -1513,7 +1514,8 @@ def start_simulation():
                 "reddit_running": true,
                 "started_at": "2025-12-01T10:00:00",
                 "graph_memory_update_enabled": true,  // Whether knowledge graph memory update enabled
-                "force_restarted": true               // Whether is forced restart
+                "force_restarted": true,              // Whether is forced restart
+                "archived_previous_run": true         // Whether previous run artifacts were archived
             }
         }
     """
@@ -1531,6 +1533,7 @@ def start_simulation():
         max_rounds = data.get('max_rounds')  # Optional: Maximum simulation rounds
         enable_graph_memory_update = data.get('enable_graph_memory_update', False)  # Optional：IsFalseEnable knowledge graph memory update
         force = data.get('force', False)  # Optional：Force restart
+        archive_previous_run = data.get('archive_previous_run', False)  # Optional: keep previous run artifacts
 
         # Verify max_rounds Parameters
         if max_rounds is not None:
@@ -1629,13 +1632,19 @@ def start_simulation():
             logger.info(f"Enable knowledge graph memory update: simulation_id={simulation_id}, graph_id={graph_id}")
         
         # Start simulation
-        run_state = SimulationRunner.start_simulation(
-            simulation_id=simulation_id,
-            platform=platform,
-            max_rounds=max_rounds,
-            enable_graph_memory_update=enable_graph_memory_update,
-            graph_id=graph_id
-        )
+        start_kwargs = {
+            "simulation_id": simulation_id,
+            "platform": platform,
+            "enable_graph_memory_update": enable_graph_memory_update,
+            "archive_previous_run": archive_previous_run,
+            "archive_reason": "start_api_archive_previous_run" if archive_previous_run else "restart",
+        }
+        if max_rounds is not None:
+            start_kwargs["max_rounds"] = max_rounds
+        if graph_id is not None:
+            start_kwargs["graph_id"] = graph_id
+
+        run_state = SimulationRunner.start_simulation(**start_kwargs)
         
         # Update simulation status
         state.status = SimulationStatus.RUNNING
@@ -1646,6 +1655,7 @@ def start_simulation():
             response_data['max_rounds_applied'] = max_rounds
         response_data['graph_memory_update_enabled'] = enable_graph_memory_update
         response_data['force_restarted'] = force_restarted
+        response_data['archived_previous_run'] = bool(archive_previous_run)
         if enable_graph_memory_update:
             response_data['graph_id'] = graph_id
         
@@ -1662,6 +1672,130 @@ def start_simulation():
         
     except Exception as e:
         logger.error(f"Failed to start simulation: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/restart-from-failure', methods=['POST'])
+def restart_from_failure(simulation_id: str):
+    """
+    Restart a failed simulation while archiving previous run artifacts.
+
+    Request (JSON):
+        {
+            "platform": "parallel",              // Optional: twitter/reddit/parallel
+            "max_rounds": 120,                    // Optional: Override max rounds
+            "enable_graph_memory_update": false   // Optional
+        }
+
+    Behavior:
+    - Requires the latest run state to be failed or stopped
+    - Archives previous run artifacts into run_attempts/<attempt_id>
+    - Starts a clean new run with same simulation_id
+    """
+    try:
+        data = request.get_json() or {}
+
+        platform = data.get('platform', 'parallel')
+        max_rounds = data.get('max_rounds')
+        enable_graph_memory_update = data.get('enable_graph_memory_update', False)
+
+        if platform not in ['twitter', 'reddit', 'parallel']:
+            return jsonify({
+                "success": False,
+                "error": f"Invalid platform type: {platform}，Optional: twitter/reddit/parallel"
+            }), 400
+
+        if max_rounds is not None:
+            try:
+                max_rounds = int(max_rounds)
+                if max_rounds <= 0:
+                    return jsonify({
+                        "success": False,
+                        "error": "max_rounds Must be positive integer"
+                    }), 400
+            except (ValueError, TypeError):
+                return jsonify({
+                    "success": False,
+                    "error": "max_rounds Must be valid integer"
+                }), 400
+
+        manager = SimulationManager()
+        state = manager.get_simulation(simulation_id)
+        if not state:
+            return jsonify({
+                "success": False,
+                "error": f"Simulation does not exist: {simulation_id}"
+            }), 404
+
+        run_state = SimulationRunner.get_run_state(simulation_id)
+        if run_state and run_state.runner_status.value in ['running', 'starting']:
+            return jsonify({
+                "success": False,
+                "error": "Simulation is running. Stop it first before restarting from failure."
+            }), 400
+
+        allowed_restart_status = {'failed', 'stopped', 'paused'}
+        if run_state and run_state.runner_status.value not in allowed_restart_status:
+            return jsonify({
+                "success": False,
+                "error": (
+                    "Restart-from-failure is only available for failed/stopped/paused runs. "
+                    f"Current runner status: {run_state.runner_status.value}"
+                )
+            }), 400
+
+        graph_id = None
+        if enable_graph_memory_update:
+            graph_id = state.graph_id
+            if not graph_id:
+                project = ProjectManager.get_project(state.project_id)
+                if project:
+                    graph_id = project.graph_id
+            if not graph_id:
+                return jsonify({
+                    "success": False,
+                    "error": "Enable knowledge graph memory update requires valid graph_id，Please ensure project graph built"
+                }), 400
+
+        restart_kwargs = {
+            "simulation_id": simulation_id,
+            "platform": platform,
+            "enable_graph_memory_update": enable_graph_memory_update,
+            "archive_previous_run": True,
+            "archive_reason": "restart_from_failure",
+        }
+        if max_rounds is not None:
+            restart_kwargs["max_rounds"] = max_rounds
+        if graph_id is not None:
+            restart_kwargs["graph_id"] = graph_id
+
+        new_run_state = SimulationRunner.start_simulation(**restart_kwargs)
+
+        state.status = SimulationStatus.RUNNING
+        manager._save_simulation_state(state)
+
+        return jsonify({
+            "success": True,
+            "data": {
+                **new_run_state.to_dict(),
+                "restarted_from_failure": True,
+                "archived_previous_run": True,
+                "graph_memory_update_enabled": enable_graph_memory_update,
+            }
+        })
+
+    except ValueError as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 400
+
+    except Exception as e:
+        logger.error(f"Failed to restart simulation from failure: {str(e)}")
         return jsonify({
             "success": False,
             "error": str(e),
@@ -1781,6 +1915,28 @@ def get_run_status(simulation_id: str):
         
     except Exception as e:
         logger.error(f"Failed to get running status: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/run-history', methods=['GET'])
+def get_run_history(simulation_id: str):
+    """Get run attempts for a simulation, including archived previous runs."""
+    try:
+        include_current = request.args.get('include_current', 'true').lower() == 'true'
+        history = SimulationRunner.get_run_history(simulation_id, include_current=include_current)
+
+        return jsonify({
+            "success": True,
+            "data": history,
+            "count": len(history)
+        })
+
+    except Exception as e:
+        logger.error(f"Failed to get run history: {str(e)}")
         return jsonify({
             "success": False,
             "error": str(e),

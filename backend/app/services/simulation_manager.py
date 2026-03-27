@@ -506,6 +506,31 @@ class SimulationManager:
                         simulations.append(state)
         
         return simulations
+
+    def delete_simulation(self, simulation_id: str) -> bool:
+        """Delete one simulation directory and cached state."""
+        sim_dir = os.path.join(self.SIMULATION_DATA_DIR, simulation_id)
+
+        # Always evict in-memory cache first.
+        self._simulations.pop(simulation_id, None)
+
+        if not os.path.exists(sim_dir):
+            return False
+
+        shutil.rmtree(sim_dir)
+        logger.info("Deleted simulation data: %s", simulation_id)
+        return True
+
+    def delete_simulations_by_project(self, project_id: str) -> int:
+        """Delete all simulations associated with a project and return deleted count."""
+        deleted_count = 0
+        simulations = self.list_simulations(project_id=project_id)
+
+        for state in simulations:
+            if self.delete_simulation(state.simulation_id):
+                deleted_count += 1
+
+        return deleted_count
     
     def get_profiles(self, simulation_id: str, platform: str = "reddit") -> List[Dict[str, Any]]:
         """Get Agent Profiles for simulation"""

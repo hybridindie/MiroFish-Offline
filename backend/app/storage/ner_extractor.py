@@ -7,6 +7,7 @@ entities and relations from text chunks, guided by the graph's ontology.
 """
 
 import logging
+import re
 from typing import Dict, Any, List, Optional
 
 from ..config import Config
@@ -192,9 +193,43 @@ class NERExtractor:
             else:
                 valid_relation_types.add(str(rt).strip())
 
+        def _normalize_entity_key(name: str) -> str:
+            """Create a conservative canonical key for deduping name variants."""
+            normalized = re.sub(r'\s+', ' ', (name or '').strip()).lower()
+            normalized = re.sub(r"[\.,'\-_/()]+", ' ', normalized)
+
+            # Strip common legal suffixes to reduce org/platform duplicates
+            # such as "Meta" vs "Meta Incorporated".
+            suffixes = {
+                'inc', 'incorporated', 'corp', 'corporation', 'co', 'company',
+                'llc', 'ltd', 'limited', 'plc', 'gmbh', 'ag', 'sa', 'srl', 'pte', 'bv',
+            }
+            parts = [p for p in normalized.split(' ') if p]
+            while len(parts) > 1 and parts[-1] in suffixes:
+                parts.pop()
+
+            return ''.join(parts)
+
+        def _preferred_name(current: str, incoming: str) -> str:
+            """Choose a stable display name for equivalent aliases."""
+            cur = (current or '').strip()
+            inc = (incoming or '').strip()
+            if not cur:
+                return inc
+            if not inc:
+                return cur
+
+            # Prefer shorter canonical-looking names (e.g. Meta over Meta Incorporated)
+            if len(inc) < len(cur):
+                return inc
+            return cur
+
         # Clean entities
         cleaned_entities = []
-        seen_names = set()
+        seen_keys = set()
+        alias_to_canonical_name: Dict[str, str] = {}
+        canonical_name_by_key: Dict[str, str] = {}
+        canonical_index_by_key: Dict[str, int] = {}
         for entity in entities:
             if not isinstance(entity, dict):
                 continue
@@ -203,11 +238,20 @@ class NERExtractor:
             if not name:
                 continue
 
-            # Deduplicate by normalized name
-            name_lower = name.lower()
-            if name_lower in seen_names:
+            # Deduplicate by conservative canonical key (case + common org suffix variants)
+            name_key = _normalize_entity_key(name)
+            if not name_key:
                 continue
-            seen_names.add(name_lower)
+            alias_to_canonical_name[name.lower()] = name
+
+            if name_key in seen_keys:
+                canonical_idx = canonical_index_by_key[name_key]
+                current_name = cleaned_entities[canonical_idx]["name"]
+                chosen_name = _preferred_name(current_name, name)
+                cleaned_entities[canonical_idx]["name"] = chosen_name
+                alias_to_canonical_name[name.lower()] = chosen_name
+                continue
+            seen_keys.add(name_key)
 
             # If ontology has types, warn but keep entities with unknown types
             if valid_entity_types and etype not in valid_entity_types:
@@ -218,6 +262,15 @@ class NERExtractor:
                 "type": etype,
                 "attributes": entity.get("attributes", {}),
             })
+            canonical_index_by_key[name_key] = len(cleaned_entities) - 1
+            canonical_name_by_key[name_key] = name
+            alias_to_canonical_name[name.lower()] = name
+
+        # Ensure alias map points to final canonical names.
+        for entity in cleaned_entities:
+            ename = entity["name"]
+            alias_to_canonical_name[ename.lower()] = ename
+            canonical_name_by_key[_normalize_entity_key(ename)] = ename
 
         # Clean relations
         cleaned_relations = []
@@ -232,6 +285,15 @@ class NERExtractor:
 
             if not source or not target:
                 continue
+
+            source = alias_to_canonical_name.get(
+                source.lower(),
+                canonical_name_by_key.get(_normalize_entity_key(source), source),
+            )
+            target = alias_to_canonical_name.get(
+                target.lower(),
+                canonical_name_by_key.get(_normalize_entity_key(target), target),
+            )
 
             # Ensure source and target entities exist
             # (they might not if LLM hallucinated a relation without the entity)

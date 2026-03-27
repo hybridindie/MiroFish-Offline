@@ -7,6 +7,7 @@ import os
 import sys
 import json
 import time
+import shutil
 import asyncio
 import threading
 import subprocess
@@ -208,6 +209,7 @@ class SimulationRunner:
         os.path.dirname(__file__),
         '../../uploads/simulations'
     )
+    RUN_HISTORY_FILE = "run_history.json"
     
     # Script directory
     SCRIPTS_DIR = os.path.join(
@@ -230,12 +232,101 @@ class SimulationRunner:
     def get_run_state(cls, simulation_id: str) -> Optional[SimulationRunState]:
         """Get run state"""
         if simulation_id in cls._run_states:
-            return cls._run_states[simulation_id]
+            state = cls._run_states[simulation_id]
+            return cls._reconcile_possible_crash_state(state)
         
         # Try to load from file
-        state = cls._load_run_state(simulation_id)
-        if state:
-            cls._run_states[simulation_id] = state
+        loaded_state = cls._load_run_state(simulation_id)
+        if not loaded_state:
+            return None
+
+        reconciled_state = cls._reconcile_possible_crash_state(loaded_state)
+        if reconciled_state:
+            cls._run_states[simulation_id] = reconciled_state
+        return reconciled_state
+
+    @classmethod
+    def cleanup_simulation_runtime(cls, simulation_id: str) -> None:
+        """Remove in-memory runtime caches for a simulation after it is fully stopped."""
+        cls._run_states.pop(simulation_id, None)
+        cls._processes.pop(simulation_id, None)
+        cls._action_queues.pop(simulation_id, None)
+        cls._monitor_threads.pop(simulation_id, None)
+        cls._graph_memory_enabled.pop(simulation_id, None)
+
+        stdout_file = cls._stdout_files.pop(simulation_id, None)
+        if stdout_file:
+            try:
+                stdout_file.close()
+            except OSError:
+                pass
+
+        stderr_file = cls._stderr_files.pop(simulation_id, None)
+        if stderr_file:
+            try:
+                stderr_file.close()
+            except OSError:
+                pass
+
+    @classmethod
+    def _is_process_alive(cls, pid: Optional[int]) -> bool:
+        """Check whether process is alive by PID."""
+        if not pid:
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    @classmethod
+    def _best_effort_terminate_orphan_process(cls, pid: Optional[int], simulation_id: str):
+        """Best-effort stop orphan process from previous server instance."""
+        if not pid:
+            return
+
+        if not cls._is_process_alive(pid):
+            return
+
+        try:
+            if IS_WINDOWS:
+                subprocess.run(
+                    ['taskkill', '/PID', str(pid), '/T', '/F'],
+                    capture_output=True,
+                    timeout=5
+                )
+            else:
+                # Process starts with start_new_session=True, so pid is also process group id.
+                os.killpg(pid, signal.SIGTERM)
+            logger.warning(f"Terminated orphan simulation process: simulation_id={simulation_id}, pid={pid}")
+        except Exception as e:
+            logger.warning(
+                f"Failed to terminate orphan simulation process: simulation_id={simulation_id}, pid={pid}, error={e}"
+            )
+
+    @classmethod
+    def _reconcile_possible_crash_state(cls, state: Optional[SimulationRunState]) -> Optional[SimulationRunState]:
+        """Reconcile state loaded after backend restart; recover stale running states."""
+        if not state:
+            return state
+
+        if state.simulation_id in cls._processes:
+            return state
+
+        if state.runner_status not in [RunnerStatus.RUNNING, RunnerStatus.STARTING, RunnerStatus.STOPPING]:
+            return state
+
+        cls._best_effort_terminate_orphan_process(state.process_pid, state.simulation_id)
+
+        state.runner_status = RunnerStatus.FAILED
+        state.twitter_running = False
+        state.reddit_running = False
+        state.completed_at = datetime.now().isoformat()
+        if not state.error:
+            state.error = "Recovered from backend crash or unexpected shutdown. Please restart simulation from last failure."
+        state.updated_at = datetime.now().isoformat()
+        cls._save_run_state(state)
+        logger.warning(f"Recovered stale running state and marked failed: {state.simulation_id}")
         return state
     
     @classmethod
@@ -307,16 +398,163 @@ class SimulationRunner:
             json.dump(data, f, ensure_ascii=False, indent=2)
         
         cls._run_states[state.simulation_id] = state
+
+    @classmethod
+    def _get_run_history_file(cls, simulation_id: str) -> str:
+        """Get run history file path for simulation."""
+        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        os.makedirs(sim_dir, exist_ok=True)
+        return os.path.join(sim_dir, cls.RUN_HISTORY_FILE)
+
+    @classmethod
+    def _load_run_history(cls, simulation_id: str) -> List[Dict[str, Any]]:
+        """Load run history entries."""
+        history_file = cls._get_run_history_file(simulation_id)
+        if not os.path.exists(history_file):
+            return []
+
+        try:
+            with open(history_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return data
+        except Exception as e:
+            logger.warning(f"Failed to load run history: simulation_id={simulation_id}, error={e}")
+        return []
+
+    @classmethod
+    def _save_run_history(cls, simulation_id: str, history: List[Dict[str, Any]]):
+        """Persist run history entries."""
+        history_file = cls._get_run_history_file(simulation_id)
+        with open(history_file, 'w', encoding='utf-8') as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+
+    @classmethod
+    def _archive_path_for_attempt(cls, simulation_id: str, attempt_id: str) -> str:
+        """Get destination archive path for one run attempt."""
+        return os.path.join(cls.RUN_STATE_DIR, simulation_id, "run_attempts", attempt_id)
+
+    @classmethod
+    def archive_current_run(cls, simulation_id: str, reason: str = "restart") -> Dict[str, Any]:
+        """
+        Archive current run artifacts so a restart does not destroy previous run details.
+
+        Returns:
+            Dict with attempt metadata and moved files.
+        """
+        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        if not os.path.exists(sim_dir):
+            return {
+                "success": False,
+                "error": f"Simulation directory does not exist: {simulation_id}"
+            }
+
+        run_state = cls.get_run_state(simulation_id)
+        attempt_id = datetime.now().strftime("%Y%m%dT%H%M%S")
+        archive_dir = cls._archive_path_for_attempt(simulation_id, attempt_id)
+        os.makedirs(archive_dir, exist_ok=True)
+
+        moved_items: List[str] = []
+        missing_items: List[str] = []
+        errors: List[str] = []
+
+        files_to_move = [
+            "run_state.json",
+            "simulation.log",
+            "stdout.log",
+            "stderr.log",
+            "twitter_simulation.db",
+            "reddit_simulation.db",
+            "env_status.json",
+        ]
+        dirs_to_move = ["twitter", "reddit", "ipc_commands", "ipc_responses"]
+
+        for name in files_to_move:
+            src = os.path.join(sim_dir, name)
+            if not os.path.exists(src):
+                missing_items.append(name)
+                continue
+            dst = os.path.join(archive_dir, name)
+            try:
+                shutil.move(src, dst)
+                moved_items.append(name)
+            except Exception as e:
+                errors.append(f"Failed to archive {name}: {e}")
+
+        for name in dirs_to_move:
+            src = os.path.join(sim_dir, name)
+            if not os.path.exists(src):
+                missing_items.append(name)
+                continue
+            dst = os.path.join(archive_dir, name)
+            try:
+                shutil.move(src, dst)
+                moved_items.append(name)
+            except Exception as e:
+                errors.append(f"Failed to archive {name}: {e}")
+
+        history = cls._load_run_history(simulation_id)
+        history_entry = {
+            "attempt_id": attempt_id,
+            "reason": reason,
+            "archived_at": datetime.now().isoformat(),
+            "status": run_state.runner_status.value if run_state else "unknown",
+            "current_round": run_state.current_round if run_state else 0,
+            "total_rounds": run_state.total_rounds if run_state else 0,
+            "started_at": run_state.started_at if run_state else None,
+            "completed_at": run_state.completed_at if run_state else None,
+            "error": run_state.error if run_state else None,
+            "archive_path": os.path.relpath(archive_dir, sim_dir),
+            "moved_items": moved_items,
+        }
+        history.insert(0, history_entry)
+        cls._save_run_history(simulation_id, history)
+
+        cls._run_states.pop(simulation_id, None)
+
+        return {
+            "success": len(errors) == 0,
+            "attempt": history_entry,
+            "moved_items": moved_items,
+            "missing_items": missing_items,
+            "errors": errors,
+        }
+
+    @classmethod
+    def get_run_history(cls, simulation_id: str, include_current: bool = True) -> List[Dict[str, Any]]:
+        """Get archived run attempts, optionally including current live run state."""
+        history = cls._load_run_history(simulation_id)
+
+        if include_current:
+            current = cls.get_run_state(simulation_id)
+            if current:
+                history = [{
+                    "attempt_id": "current",
+                    "reason": "active",
+                    "archived_at": None,
+                    "status": current.runner_status.value,
+                    "current_round": current.current_round,
+                    "total_rounds": current.total_rounds,
+                    "started_at": current.started_at,
+                    "completed_at": current.completed_at,
+                    "error": current.error,
+                    "archive_path": None,
+                    "moved_items": [],
+                }] + history
+
+        return history
     
     @classmethod
     def start_simulation(
         cls,
         simulation_id: str,
         platform: str = "parallel",  # twitter / reddit / parallel
-        max_rounds: int = None,  # Maximum simulation rounds (optional, for truncating long simulations)
+        max_rounds: Optional[int] = None,  # Maximum simulation rounds (optional, for truncating long simulations)
         enable_graph_memory_update: bool = False,  # Whether to update activities to the graph
-        graph_id: str = None,  # Graph ID (required when enabling graph updates)
-        storage: 'GraphStorage' = None  # GraphStorage instance (required if enable_graph_memory_update)
+        graph_id: Optional[str] = None,  # Graph ID (required when enabling graph updates)
+        storage: 'GraphStorage' = None,  # GraphStorage instance (required if enable_graph_memory_update)
+        archive_previous_run: bool = False,
+        archive_reason: str = "restart"
     ) -> SimulationRunState:
         """
         Start simulation
@@ -335,6 +573,20 @@ class SimulationRunner:
         existing = cls.get_run_state(simulation_id)
         if existing and existing.runner_status in [RunnerStatus.RUNNING, RunnerStatus.STARTING]:
             raise ValueError(f"Simulation already running: {simulation_id}")
+
+        # Preserve previous run artifacts before creating a new run state.
+        if archive_previous_run and existing and existing.runner_status in [
+            RunnerStatus.FAILED,
+            RunnerStatus.COMPLETED,
+            RunnerStatus.STOPPED,
+            RunnerStatus.PAUSED,
+        ]:
+            archive_result = cls.archive_current_run(simulation_id, reason=archive_reason)
+            if not archive_result.get("success"):
+                logger.warning(
+                    f"Archive previous run completed with warnings: simulation_id={simulation_id}, "
+                    f"errors={archive_result.get('errors')}"
+                )
         
         # Load simulation config
         sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
