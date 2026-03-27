@@ -517,7 +517,17 @@ class SimulationManager:
         if not os.path.exists(sim_dir):
             return False
 
-        shutil.rmtree(sim_dir)
+        try:
+            shutil.rmtree(sim_dir)
+        except OSError as exc:
+            logger.error(
+                "Failed to delete simulation data '%s' at '%s': %s",
+                simulation_id,
+                sim_dir,
+                exc,
+            )
+            return False
+
         logger.info("Deleted simulation data: %s", simulation_id)
         return True
 

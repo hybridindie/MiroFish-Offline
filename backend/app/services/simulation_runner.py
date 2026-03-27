@@ -456,7 +456,9 @@ class SimulationRunner:
             }
 
         run_state = cls.get_run_state(simulation_id)
-        attempt_id = datetime.now().strftime("%Y%m%dT%H%M%S")
+        # Include microseconds to ensure uniqueness even for rapid successive reruns
+        now = datetime.now()
+        attempt_id = now.strftime("%Y%m%dT%H%M%S") + f"_{now.microsecond:06d}"
         archive_dir = cls._archive_path_for_attempt(simulation_id, attempt_id)
         os.makedirs(archive_dir, exist_ok=True)
 

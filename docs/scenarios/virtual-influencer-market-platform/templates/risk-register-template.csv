@@ -1,5 +1,0 @@
-risk_id,track,market,platform,risk_type,description,likelihood_1_5,impact_1_5,risk_score,owner,mitigation,trigger,status
-R-001,adult,US,OnlyFans,compliance,Age-gating weakness in funnel entry,0,0,0,Legal,Add verification and gated onboarding,Any under-18 signal detected,open
-R-002,adult,US,OnlyFans,payment,Payment processor disruption,0,0,0,Finance,Set backup payout and reserve policy,Payout delays above threshold,open
-R-003,hybrid,US,X + Reddit,reputation,Brand safety incident from narrative hijack,0,0,0,Comms,Add moderation and rapid-response protocol,Sentiment shock above threshold,open
-R-004,mainstream,US,TikTok,platform,Algorithm reach collapse,0,0,0,Growth,Diversify channel allocation,Reach drops for 2 consecutive windows,open

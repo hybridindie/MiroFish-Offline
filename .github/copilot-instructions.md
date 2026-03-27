@@ -7,6 +7,7 @@
 ## Environment And Pitfalls
 - Backend-specific rules are now scoped in `.github/instructions/backend.instructions.md` and only apply to `backend/**`.
 - Frontend-specific rules are now scoped in `.github/instructions/frontend.instructions.md` and only apply to `frontend/**`.
+- Scenario-documentation rules are now scoped in `.github/instructions/scenario-docs.instructions.md` and apply to `docs/scenarios/**`.
 
 ## Key Reference Files
 - Commands: `package.json`
