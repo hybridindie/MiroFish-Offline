@@ -281,28 +281,25 @@ class SimulationRunner:
 
     @classmethod
     def _best_effort_terminate_orphan_process(cls, pid: Optional[int], simulation_id: str):
-        """Best-effort stop orphan process from previous server instance."""
+        """
+        Best-effort handling for a possible orphan process from a previous server instance.
+
+        To avoid accidentally terminating an unrelated process after PID reuse,
+        this method only checks for liveness and logs; it does not send any kill signal.
+        The associated simulation run is marked as FAILED by the caller.
+        """
         if not pid:
             return
 
         if not cls._is_process_alive(pid):
             return
 
-        try:
-            if IS_WINDOWS:
-                subprocess.run(
-                    ['taskkill', '/PID', str(pid), '/T', '/F'],
-                    capture_output=True,
-                    timeout=5
-                )
-            else:
-                # Process starts with start_new_session=True, so pid is also process group id.
-                os.killpg(pid, signal.SIGTERM)
-            logger.warning(f"Terminated orphan simulation process: simulation_id={simulation_id}, pid={pid}")
-        except Exception as e:
-            logger.warning(
-                f"Failed to terminate orphan simulation process: simulation_id={simulation_id}, pid={pid}, error={e}"
-            )
+        logger.warning(
+            "Detected possible orphan simulation process but did not terminate it "
+            "(simulation_id=%s, pid=%s). Marking run as FAILED.",
+            simulation_id,
+            pid,
+        )
 
     @classmethod
     def _reconcile_possible_crash_state(cls, state: Optional[SimulationRunState]) -> Optional[SimulationRunState]:
@@ -426,8 +423,17 @@ class SimulationRunner:
     def _save_run_history(cls, simulation_id: str, history: List[Dict[str, Any]]):
         """Persist run history entries."""
         history_file = cls._get_run_history_file(simulation_id)
-        with open(history_file, 'w', encoding='utf-8') as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
+        try:
+            with open(history_file, 'w', encoding='utf-8') as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            # Do not raise here to avoid blocking restarts.
+            logger.error(
+                "Failed to save run history: simulation_id=%s, file=%s, error=%s",
+                simulation_id,
+                history_file,
+                e,
+            )
 
     @classmethod
     def _archive_path_for_attempt(cls, simulation_id: str, attempt_id: str) -> str:

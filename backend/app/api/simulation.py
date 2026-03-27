@@ -1593,8 +1593,9 @@ def start_simulation():
                                 "error": f"Simulation is running. Please call /stop first or use force=true to force restart."
                             }), 400
 
-                # If force mode，Clean runtime logs
-                if force:
+                # If force mode，clean runtime logs unless we need to archive
+                # the previous run first in SimulationRunner.start_simulation.
+                if force and not archive_previous_run:
                     logger.info(f"Force mode: cleaning simulation runtime files for {simulation_id}")
                     cleanup_result = SimulationRunner.cleanup_simulation_logs(simulation_id)
                     if not cleanup_result.get("success"):
@@ -1732,14 +1733,23 @@ def restart_from_failure(simulation_id: str):
             }), 404
 
         run_state = SimulationRunner.get_run_state(simulation_id)
-        if run_state and run_state.runner_status.value in ['running', 'starting']:
+        if not run_state:
+            return jsonify({
+                "success": False,
+                "error": (
+                    "No previous run state found for this simulation. "
+                    "Restart-from-failure requires an existing failed/stopped/paused run."
+                )
+            }), 400
+
+        if run_state.runner_status.value in ['running', 'starting']:
             return jsonify({
                 "success": False,
                 "error": "Simulation is running. Stop it first before restarting from failure."
             }), 400
 
         allowed_restart_status = {'failed', 'stopped', 'paused'}
-        if run_state and run_state.runner_status.value not in allowed_restart_status:
+        if run_state.runner_status.value not in allowed_restart_status:
             return jsonify({
                 "success": False,
                 "error": (
