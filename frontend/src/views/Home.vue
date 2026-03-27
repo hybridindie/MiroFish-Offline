@@ -226,7 +226,6 @@ const steps = [
 ]
 
 const router = useRouter()
-
 const formData = ref({ simulationRequirement: '' })
 const files = ref([])
 const loading = ref(false)
