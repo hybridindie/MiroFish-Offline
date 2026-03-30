@@ -4,6 +4,7 @@ import pytest
 from flask import Flask
 
 import app.api.graph as graph_api
+import app.services.project_deletion_service as deletion_svc
 
 
 class FakeStorage:
@@ -56,9 +57,9 @@ def test_delete_project_blocks_if_simulation_running(client, monkeypatch):
     )
 
     monkeypatch.setattr(graph_api.ProjectManager, "get_project", lambda project_id: project)
-    monkeypatch.setattr(graph_api, "SimulationManager", lambda: manager)
+    monkeypatch.setattr(deletion_svc, "SimulationManager", lambda: manager)
     monkeypatch.setattr(
-        graph_api.SimulationRunner,
+        deletion_svc.SimulationRunner,
         "get_run_state",
         lambda simulation_id: SimpleNamespace(runner_status=SimpleNamespace(value="running")),
     )
@@ -92,23 +93,30 @@ def test_delete_project_cleans_reports_simulations_and_graph(client, monkeypatch
 
     monkeypatch.setattr(graph_api.ProjectManager, "get_project", lambda project_id: project)
     monkeypatch.setattr(graph_api.ProjectManager, "delete_project", lambda project_id: True)
-    monkeypatch.setattr(graph_api, "SimulationManager", lambda: manager)
-    monkeypatch.setattr(graph_api.SimulationRunner, "get_run_state", lambda simulation_id: None)
+    monkeypatch.setattr(deletion_svc, "SimulationManager", lambda: manager)
+    monkeypatch.setattr(deletion_svc.SimulationRunner, "get_run_state", lambda simulation_id: None)
 
     cleaned_simulation_ids = []
     monkeypatch.setattr(
-        graph_api.SimulationRunner,
+        deletion_svc.SimulationRunner,
         "cleanup_simulation_runtime",
         lambda simulation_id: cleaned_simulation_ids.append(simulation_id),
     )
 
-    def _list_reports(simulation_id, limit=200):
-        if simulation_id == "sim_1":
-            return [SimpleNamespace(report_id="report_1")]
-        return []
+    # Stateful mock: return the report only on the first call so the while-True
+    # pagination loop in _delete_reports terminates after one batch.
+    remaining_reports = {"sim_1": [SimpleNamespace(report_id="report_1")]}
 
-    monkeypatch.setattr(graph_api.ReportManager, "list_reports", _list_reports)
-    monkeypatch.setattr(graph_api.ReportManager, "delete_report", lambda report_id: True)
+    def _list_reports(simulation_id, limit=200):
+        return list(remaining_reports.get(simulation_id, []))
+
+    def _delete_report(report_id):
+        for key in remaining_reports:
+            remaining_reports[key] = [r for r in remaining_reports[key] if r.report_id != report_id]
+        return True
+
+    monkeypatch.setattr(deletion_svc.ReportManager, "list_reports", _list_reports)
+    monkeypatch.setattr(deletion_svc.ReportManager, "delete_report", _delete_report)
 
     response = client.delete("/api/graph/project/proj_1")
     payload = response.get_json()
@@ -129,8 +137,8 @@ def test_delete_project_returns_500_when_graph_storage_missing(client, monkeypat
     client.application.extensions["neo4j_storage"] = None
 
     monkeypatch.setattr(graph_api.ProjectManager, "get_project", lambda project_id: project)
-    monkeypatch.setattr(graph_api, "SimulationManager", lambda: manager)
-    monkeypatch.setattr(graph_api.SimulationRunner, "get_run_state", lambda simulation_id: None)
+    monkeypatch.setattr(deletion_svc, "SimulationManager", lambda: manager)
+    monkeypatch.setattr(deletion_svc.SimulationRunner, "get_run_state", lambda simulation_id: None)
 
     response = client.delete("/api/graph/project/proj_1")
     payload = response.get_json()

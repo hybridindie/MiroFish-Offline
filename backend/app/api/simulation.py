@@ -5,6 +5,7 @@ Step2: Entity reading and filtering, OASIS simulation preparation and execution 
 
 import os
 import traceback
+from typing import Optional
 from flask import request, jsonify, send_file, current_app
 
 from . import simulation_bp
@@ -12,11 +13,35 @@ from ..config import Config
 from ..services.entity_reader import EntityReader
 from ..services.oasis_profile_generator import OasisProfileGenerator
 from ..services.simulation_manager import SimulationManager, SimulationStatus
-from ..services.simulation_runner import SimulationRunner, RunnerStatus
+from ..services.simulation_runner import SimulationRunner
 from ..utils.logger import get_logger
 from ..models.project import ProjectManager
 
 logger = get_logger('mirofish.api.simulation')
+
+
+def _build_prepare_state_response(
+    simulation_id: str,
+    state,
+    message: str,
+    *,
+    already_prepared: bool = False,
+    progress: Optional[int] = None,
+):
+    """Build a consistent status payload for simulation preparation state."""
+    payload = {
+        "simulation_id": simulation_id,
+        "status": state.status.value,
+        "progress": progress if progress is not None else (100 if state.status == SimulationStatus.READY else 0),
+        "message": message,
+        "already_prepared": already_prepared,
+        "expected_entities_count": state.entities_count,
+        "entity_types": state.entity_types,
+        "config_generated": state.config_generated,
+    }
+    if state.error:
+        payload["error"] = state.error
+    return payload
 
 
 # Interview prompt optimization prefix
@@ -243,9 +268,6 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
     Returns:
         (is_prepared: bool, info: dict)
     """
-    import os
-    from ..config import Config
-    
     simulation_dir = os.path.join(Config.OASIS_SIMULATION_DATA_DIR, simulation_id)
     
     # Check if directory exists
@@ -263,12 +285,12 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
     # Check if files exist
     existing_files = []
     missing_files = []
-    for f in required_files:
-        file_path = os.path.join(simulation_dir, f)
+    for required_file in required_files:
+        file_path = os.path.join(simulation_dir, required_file)
         if os.path.exists(file_path):
-            existing_files.append(f)
+            existing_files.append(required_file)
         else:
-            missing_files.append(f)
+            missing_files.append(required_file)
     
     if missing_files:
         return False, {
@@ -281,8 +303,8 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
     state_file = os.path.join(simulation_dir, "state.json")
     try:
         import json
-        with open(state_file, 'r', encoding='utf-8') as f:
-            state_data = json.load(f)
+        with open(state_file, 'r', encoding='utf-8') as state_fp:
+            state_data = json.load(state_fp)
         
         status = state_data.get("status", "")
         config_generated = state_data.get("config_generated", False)
@@ -306,8 +328,8 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
             
             profiles_count = 0
             if os.path.exists(profiles_file):
-                with open(profiles_file, 'r', encoding='utf-8') as f:
-                    profiles_data = json.load(f)
+                with open(profiles_file, 'r', encoding='utf-8') as profiles_fp:
+                    profiles_data = json.load(profiles_fp)
                     profiles_count = len(profiles_data) if isinstance(profiles_data, list) else 0
             
             # If status is "preparing" but files are completed, update status to "ready"
@@ -316,8 +338,8 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
                     state_data["status"] = "ready"
                     from datetime import datetime
                     state_data["updated_at"] = datetime.now().isoformat()
-                    with open(state_file, 'w', encoding='utf-8') as f:
-                        json.dump(state_data, f, ensure_ascii=False, indent=2)
+                    with open(state_file, 'w', encoding='utf-8') as state_write_fp:
+                        json.dump(state_data, state_write_fp, ensure_ascii=False, indent=2)
                     logger.info(f"Auto update simulation status: {simulation_id} preparing -> ready")
                     status = "ready"
                 except Exception as e:
@@ -603,6 +625,13 @@ def prepare_simulation():
                     realtime_save_interval_seconds=realtime_save_interval_seconds,
                     config_mode=config_mode,
                 )
+
+                if result_state.status != SimulationStatus.READY:
+                    failure_message = result_state.error or (
+                        f"Simulation preparation ended in unexpected state: {result_state.status.value}"
+                    )
+                    task_manager.fail_task(task_id, failure_message)
+                    return
                 
                 # Task complete
                 task_manager.complete_task(
@@ -705,10 +734,46 @@ def get_prepare_status():
                         "prepare_info": prepare_info
                     }
                 })
+
+            simulation_state = manager.get_simulation(simulation_id)
+            if simulation_state and simulation_state.status == SimulationStatus.FAILED:
+                return jsonify({
+                    "success": True,
+                    "data": _build_prepare_state_response(
+                        simulation_id,
+                        simulation_state,
+                        simulation_state.error or "Preparation failed",
+                        progress=0,
+                    )
+                })
+            if simulation_state and simulation_state.status == SimulationStatus.PREPARING and not task_id:
+                return jsonify({
+                    "success": True,
+                    "data": _build_prepare_state_response(
+                        simulation_id,
+                        simulation_state,
+                        "Preparation in progress",
+                        progress=10,
+                    )
+                })
         
         # If no task_id，ReturnError
         if not task_id:
             if simulation_id:
+                simulation_state = manager.get_simulation(simulation_id)
+                if simulation_state:
+                    return jsonify({
+                        "success": True,
+                        "data": _build_prepare_state_response(
+                            simulation_id,
+                            simulation_state,
+                            "Preparation not started yet, please call /api/simulation/prepare"
+                            if simulation_state.status == SimulationStatus.CREATED
+                            else simulation_state.error or f"Preparation status: {simulation_state.status.value}",
+                            progress=0 if simulation_state.status == SimulationStatus.CREATED else None,
+                        )
+                    })
+
                 # Have simulation_idBut notPreparation complete
                 return jsonify({
                     "success": True,
@@ -744,6 +809,20 @@ def get_prepare_status():
                             "already_prepared": True,
                             "prepare_info": prepare_info
                         }
+                    })
+
+                simulation_state = manager.get_simulation(simulation_id)
+                if simulation_state:
+                    message = simulation_state.error or f"Preparation status: {simulation_state.status.value}"
+                    if simulation_state.status == SimulationStatus.CREATED:
+                        message = "Preparation not started yet, please call /api/simulation/prepare"
+                    return jsonify({
+                        "success": True,
+                        "data": _build_prepare_state_response(
+                            simulation_id,
+                            simulation_state,
+                            message,
+                        )
                     })
             
             return jsonify({
@@ -839,7 +918,7 @@ def list_simulations():
         }), 500
 
 
-def _get_report_id_for_simulation(simulation_id: str) -> str:
+def _get_report_id_for_simulation(simulation_id: str) -> Optional[str]:
     """
     Get simulation Corresponding latest report_id
     
@@ -850,10 +929,9 @@ def _get_report_id_for_simulation(simulation_id: str) -> str:
         simulation_id: Simulation ID
         
     Returns:
-        report_id Or None
+        report_id or None
     """
     import json
-    from datetime import datetime
     
     # reports Directory path：backend/uploads/reports
     # __file__ Is app/api/simulation.py，Need to go up two levels to backend/
@@ -891,7 +969,10 @@ def _get_report_id_for_simulation(simulation_id: str) -> str:
         
         # Sort by creation time descending，ReturnLatest
         matching_reports.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-        return matching_reports[0].get("report_id")
+        latest_report_id = matching_reports[0].get("report_id")
+        if isinstance(latest_report_id, str) and latest_report_id:
+            return latest_report_id
+        return None
         
     except Exception as e:
         logger.warning(f"Failed to find report for simulation {simulation_id}: {e}")
@@ -1221,6 +1302,8 @@ def get_simulation_config_realtime(simulation_id: str):
         is_generating = False
         generation_stage = None
         config_generated = False
+        status = "created"
+        error = None
         
         state_file = os.path.join(sim_dir, "state.json")
         if os.path.exists(state_file):
@@ -1230,6 +1313,7 @@ def get_simulation_config_realtime(simulation_id: str):
                     status = state_data.get("status", "")
                     is_generating = status == "preparing"
                     config_generated = state_data.get("config_generated", False)
+                    error = state_data.get("error")
                     
                     # Judge current stage
                     if is_generating:
@@ -1239,6 +1323,8 @@ def get_simulation_config_realtime(simulation_id: str):
                             generation_stage = "generating_profiles"
                     elif status == "ready":
                         generation_stage = "completed"
+                    elif status == "failed":
+                        generation_stage = "failed"
             except Exception:
                 pass
         
@@ -1250,8 +1336,11 @@ def get_simulation_config_realtime(simulation_id: str):
             "is_generating": is_generating,
             "generation_stage": generation_stage,
             "config_generated": config_generated,
-            "config": config
+            "config": config,
+            "status": status,
         }
+        if error:
+            response_data["error"] = error
         
         # If configuration exists，Extract key statistics
         if config:

@@ -14,16 +14,11 @@ export function listProjects(limit = 50) {
 }
 
 /**
- * Get project details
+ * Get project details (alias for getProject from graph.js to maintain consistent naming)
  * @param {String} projectId - Project ID
  * @returns {Promise}
  */
-export function getProjectDetails(projectId) {
-  return service({
-    url: `/api/graph/project/${projectId}`,
-    method: 'get'
-  })
-}
+export { getProject as getProjectDetails } from './graph'
 
 /**
  * Delete a project

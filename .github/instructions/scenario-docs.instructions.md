@@ -1,6 +1,6 @@
 ---
 description: "Scenario-documentation guidance for market/platform prompts, especially when updating platform assumptions, risk priors, and real-vs-virtual creator analysis."
-applyTo: "docs/scenarios/**"
+applyTo: "docs/social/**"
 ---
 
 # Scenario Documentation Guidelines
@@ -18,6 +18,7 @@ applyTo: "docs/scenarios/**"
 - Preserve the existing scoring, event, and decision-output structure when refreshing factual priors in a prompt template.
 
 ## Key Reference Files
-- Prompt templates: `docs/scenarios/virtual-influencer-market-platform/templates/`
-- Platform packets: `docs/social/`
-- Supporting corpus: `docs/social/integration/`, `docs/social/journeys/`, `docs/social/topics/`, `docs/social/personas/`
+- Platform packets: `docs/social/platforms/`
+- Personas: `docs/social/personas/`
+- Creator journeys: `docs/social/journeys/`
+- Supporting corpus: `docs/social/integration/`, `docs/social/topics/`
