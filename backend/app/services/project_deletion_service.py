@@ -3,8 +3,7 @@ Project Deletion Service
 Orchestrates safe, atomic project deletion including reports, simulations, and graph.
 """
 
-import logging
-from typing import Optional, Dict, Any
+from typing import Optional
 from dataclasses import dataclass
 from flask import current_app
 
@@ -87,6 +86,18 @@ class ProjectDeletionService:
         deleted_reports = self._delete_reports(project_id)
         deleted_simulations = self._delete_simulations(project_id)
         deleted_graph = self._delete_graph(project_id, project.graph_id) if neo4j_available else False
+
+        # If the project had a graph but deletion failed, stop here to avoid
+        # orphaning the graph data in Neo4j.
+        if project.graph_id and not deleted_graph:
+            return DeletionResult(
+                success=False,
+                project_id=project_id,
+                error=(
+                    f"Graph deletion failed for graph '{project.graph_id}'; "
+                    "project metadata was preserved to allow retry"
+                )
+            )
 
         # Final: Delete project metadata.
         success = ProjectManager.delete_project(project_id)

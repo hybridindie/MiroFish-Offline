@@ -1,5 +1,4 @@
 import service from './index'
-import { getProject } from './graph'
 
 /**
  * List all projects
